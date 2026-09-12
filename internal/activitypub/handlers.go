@@ -3,6 +3,7 @@ package activitypub
 import (
 	"crypto/rsa"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -21,28 +22,38 @@ const (
 
 // Handler serves the ActivityPub surface for every series: WebFinger,
 // actor, outbox, individual notes, followers, and an inbox that accepts
-// Follow/Undo{Follow} (replies land here too but are ignored until the
-// comment bridge, M3).
+// Follow/Undo{Follow} and bridges replies back as Forgejo/Radicle
+// comments.
 type Handler struct {
 	store *state.Store
 	host  string
 	log   *slog.Logger
-	// repoURL and known are supplied by the caller (cmd/sync/main.go),
-	// which already knows every series' topology — avoids this package
+	// repoURL, known, and postComment are supplied by the caller
+	// (cmd/sync/main.go), which already knows every series' topology and
+	// holds the actual sync.RepoSyncer instances — avoids this package
 	// needing to know about config.Config or sync.RepoSyncer at all.
-	repoURL func(series string) string
-	known   func(series string) bool
-	client  *http.Client
+	repoURL     func(series string) string
+	known       func(series string) bool
+	postComment func(repoPair, kind string, forgejoID int64, radicleID, body string) error
+	client      *http.Client
 }
 
-func NewHandler(store *state.Store, host string, log *slog.Logger, repoURL func(series string) string, known func(series string) bool) *Handler {
+func NewHandler(
+	store *state.Store,
+	host string,
+	log *slog.Logger,
+	repoURL func(series string) string,
+	known func(series string) bool,
+	postComment func(repoPair, kind string, forgejoID int64, radicleID, body string) error,
+) *Handler {
 	return &Handler{
-		store:   store,
-		host:    host,
-		log:     log,
-		repoURL: repoURL,
-		known:   known,
-		client:  &http.Client{Timeout: 15 * time.Second},
+		store:       store,
+		host:        host,
+		log:         log,
+		repoURL:     repoURL,
+		known:       known,
+		postComment: postComment,
+		client:      &http.Client{Timeout: 15 * time.Second},
 	}
 }
 
@@ -255,12 +266,53 @@ func (h *Handler) inbox(w http.ResponseWriter, r *http.Request, series string) {
 				h.log.Error("ap inbox: remove follower", "series", series, "actor", act.Actor, "err", err)
 			}
 		}
+	case "Create":
+		var note inboxNote
+		if err := json.Unmarshal(act.Object, &note); err == nil && note.Type == "Note" && note.InReplyTo != "" {
+			h.handleReply(series, remoteActor, note)
+		}
 	default:
-		// Replies (Create{Note}) land here too but aren't handled until
-		// the comment bridge (v2 M3) — accepted and ignored for now.
+		// Anything else (Like, Announce, ...) is accepted and ignored.
 	}
 
 	w.WriteHeader(http.StatusAccepted)
+}
+
+// inboxNote is the subset of an inbound reply's Note object this handler
+// reads.
+type inboxNote struct {
+	Type      string `json:"type"`
+	InReplyTo string `json:"inReplyTo"`
+	Content   string `json:"content"`
+}
+
+// handleReply bridges a fediverse reply to one of our Notes back onto the
+// Forgejo issue/PR and Radicle issue/patch it's actually about. Create-only
+// and best-effort, same trust model as the rest of graft's mirroring: never
+// blocks or fails the inbox response, just logs and moves on.
+func (h *Handler) handleReply(series string, remoteActor *Actor, note inboxNote) {
+	noteSeries, entryID, ok := ParseNoteURI(h.host, note.InReplyTo)
+	if !ok || noteSeries != series {
+		return
+	}
+	e, err := h.store.ActivityByID(entryID)
+	if err != nil {
+		h.log.Error("ap reply: load activity", "series", series, "id", entryID, "err", err)
+		return
+	}
+	if e == nil || (e.Kind != "issue" && e.Kind != "patch") {
+		return // nothing to comment on — a reply to a git commit note, or the entry vanished
+	}
+
+	who := remoteActor.PreferredUsername
+	if who == "" {
+		who = remoteActor.Name
+	}
+	body := fmt.Sprintf("**via Fediverse, @%s:**\n\n%s", who, stripHTML(note.Content))
+
+	if err := h.postComment(e.RepoPair, e.Kind, e.ForgejoID, e.RadicleID, body); err != nil {
+		h.log.Error("ap reply: post comment", "series", series, "repo_pair", e.RepoPair, "err", err)
+	}
 }
 
 // sendAccept replies to a Follow with a signed Accept, embedding the

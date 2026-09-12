@@ -5,6 +5,7 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -46,6 +47,7 @@ func main() {
 	}
 
 	syncers := make([]*sync.RepoSyncer, 0, len(cfg.Repos))
+	syncersByPair := map[string]*sync.RepoSyncer{}
 	for _, pair := range cfg.Repos {
 		rs, err := sync.New(pair, st, sync.WorkDirFor(stateDir, pair.Name))
 		if err != nil {
@@ -53,6 +55,7 @@ func main() {
 			os.Exit(1)
 		}
 		syncers = append(syncers, rs)
+		syncersByPair[pair.Name] = rs
 	}
 
 	topology := buildTopology(cfg)
@@ -73,6 +76,13 @@ func main() {
 			func(series string) bool {
 				_, ok := topology[series]
 				return ok
+			},
+			func(repoPair, kind string, forgejoID int64, radicleID, body string) error {
+				rs, ok := syncersByPair[repoPair]
+				if !ok {
+					return fmt.Errorf("unknown repo pair %q", repoPair)
+				}
+				return rs.CommentOnItem(kind, forgejoID, radicleID, body)
 			},
 		)
 	}

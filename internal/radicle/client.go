@@ -134,6 +134,7 @@ type Patch struct {
 	State     PatchState `json:"state"`
 	Author    Actor      `json:"author"`
 	Revisions []struct {
+		ID          string `json:"id"` // needed for `rad patch comment <revision-id>`
 		Description string `json:"description"`
 		OID         string `json:"oid"`  // head commit of the revision
 		Base        string `json:"base"` // commit the patch is based on
@@ -146,4 +147,20 @@ func (c *Client) ListPatches() ([]Patch, error) {
 		return nil, err
 	}
 	return patches, nil
+}
+
+// CommentIssue adds a top-level comment to an issue (in reply to the issue
+// description itself, not to another comment) — verified against
+// `rad issue comment --help` on a live node.
+func (c *Client) CommentIssue(issueID, message string) error {
+	_, err := c.rad("issue", "comment", issueID, "-m", message)
+	return err
+}
+
+// CommentPatch adds a comment to a patch revision. Note this takes a
+// revision ID, not the patch's own ID — verified against
+// `rad patch comment --help` on a live node.
+func (c *Client) CommentPatch(revisionID, message string) error {
+	_, err := c.rad("patch", "comment", revisionID, "-m", message)
+	return err
 }

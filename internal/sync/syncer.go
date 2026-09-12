@@ -1,6 +1,7 @@
 package sync
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/url"
@@ -117,6 +118,38 @@ func (rs *RepoSyncer) Series() string {
 		return rs.pair.Series
 	}
 	return rs.pair.Name
+}
+
+// CommentOnItem posts a reply (from the ActivityPub comment bridge, see
+// internal/activitypub) onto the underlying Forgejo issue/PR and Radicle
+// issue/patch this pair mirrors. For a patch, radicleID is used as the
+// revision to comment on — correct for the common single-revision case,
+// since a patch's own id equals its first revision's id; a patch that has
+// since been updated with further revisions may have the comment attach
+// to an older revision instead of the latest one, a known scoped
+// limitation rather than a bug to chase down for v2.
+func (rs *RepoSyncer) CommentOnItem(kind string, forgejoID int64, radicleID, body string) error {
+	var errs []error
+	if forgejoID != 0 {
+		if err := rs.forgejo.CreateIssueComment(forgejoID, body); err != nil {
+			errs = append(errs, fmt.Errorf("forgejo: %w", err))
+		}
+	}
+	if radicleID != "" {
+		var err error
+		switch kind {
+		case "issue":
+			err = rs.radicle.CommentIssue(radicleID, body)
+		case "patch":
+			err = rs.radicle.CommentPatch(radicleID, body)
+		default:
+			err = fmt.Errorf("cannot comment on kind %q", kind)
+		}
+		if err != nil {
+			errs = append(errs, fmt.Errorf("radicle: %w", err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // Run executes every enabled scope once, logging and continuing past

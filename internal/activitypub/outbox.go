@@ -2,6 +2,7 @@ package activitypub
 
 import (
 	"strconv"
+	"strings"
 	"time"
 
 	"graft/internal/state"
@@ -46,6 +47,26 @@ const publicAudience = "https://www.w3.org/ns/activitystreams#Public"
 // NoteURI returns the stable object URI for one activity_log entry's Note.
 func NoteURI(host, series string, entryID int64) string {
 	return ActorURI(host, series) + "/notes/" + strconv.FormatInt(entryID, 10)
+}
+
+// ParseNoteURI is NoteURI's inverse: given a URI a reply's inReplyTo
+// claims to point at, extract the series and activity_log id it names —
+// used by the inbox to resolve a reply back to the item it's about.
+func ParseNoteURI(host, uri string) (series string, entryID int64, ok bool) {
+	prefix := "https://" + host + "/actors/"
+	rest := strings.TrimPrefix(uri, prefix)
+	if rest == uri {
+		return "", 0, false
+	}
+	parts := strings.Split(rest, "/")
+	if len(parts) != 3 || parts[1] != "notes" {
+		return "", 0, false
+	}
+	id, err := strconv.ParseInt(parts[2], 10, 64)
+	if err != nil {
+		return "", 0, false
+	}
+	return parts[0], id, true
 }
 
 // BuildNote turns one mirrored event into its Note representation.

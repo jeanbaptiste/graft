@@ -70,6 +70,8 @@ CREATE TABLE IF NOT EXISTS activity_log (
 	url         TEXT NOT NULL DEFAULT '',
 	series      TEXT NOT NULL DEFAULT '',
 	series_url  TEXT NOT NULL DEFAULT '',
+	forgejo_id  INTEGER NOT NULL DEFAULT 0,
+	radicle_id  TEXT NOT NULL DEFAULT '',
 	occurred_at TEXT NOT NULL
 );
 
@@ -110,6 +112,8 @@ CREATE TABLE IF NOT EXISTS ap_delivery_cursor (
 		`ALTER TABLE activity_log ADD COLUMN url TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE activity_log ADD COLUMN series TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE activity_log ADD COLUMN series_url TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE activity_log ADD COLUMN forgejo_id INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE activity_log ADD COLUMN radicle_id TEXT NOT NULL DEFAULT ''`,
 	} {
 		if _, err := db.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			return err
@@ -201,6 +205,8 @@ type Activity struct {
 	URL       string // where to send someone who clicks this entry — the
 	// forge or Radicle page for the thing that now exists because of
 	// this sync; "" if none is known.
+	ForgejoID int64  // issue/PR number on Forgejo, for kind "issue"/"patch"; 0 for "git"
+	RadicleID string // issue/patch id on Radicle, for kind "issue"/"patch"; "" for "git"
 }
 
 // Direction values for Activity.Direction, kept as constants so callers
@@ -215,9 +221,9 @@ const (
 // not once per sync pass.
 func (s *Store) LogActivity(a Activity) error {
 	_, err := s.db.Exec(`
-INSERT INTO activity_log (repo_pair, kind, direction, summary, url, series, series_url, occurred_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-`, a.RepoPair, a.Kind, a.Direction, a.Summary, a.URL, a.Series, a.SeriesURL, time.Now().UTC().Format(time.RFC3339))
+INSERT INTO activity_log (repo_pair, kind, direction, summary, url, series, series_url, forgejo_id, radicle_id, occurred_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`, a.RepoPair, a.Kind, a.Direction, a.Summary, a.URL, a.Series, a.SeriesURL, a.ForgejoID, a.RadicleID, time.Now().UTC().Format(time.RFC3339))
 	return err
 }
 
@@ -231,7 +237,7 @@ type ActivityEntry struct {
 // ActivitySince returns every activity entry at or after since, newest first.
 func (s *Store) ActivitySince(since time.Time) ([]ActivityEntry, error) {
 	rows, err := s.db.Query(`
-SELECT id, repo_pair, kind, direction, summary, url, series, series_url, occurred_at FROM activity_log
+SELECT id, repo_pair, kind, direction, summary, url, series, series_url, forgejo_id, radicle_id, occurred_at FROM activity_log
 WHERE occurred_at >= ?
 ORDER BY occurred_at DESC
 `, since.UTC().Format(time.RFC3339))
@@ -246,7 +252,7 @@ ORDER BY occurred_at DESC
 // ActivityPub outbox.
 func (s *Store) ActivityForSeries(series string, limit int) ([]ActivityEntry, error) {
 	rows, err := s.db.Query(`
-SELECT id, repo_pair, kind, direction, summary, url, series, series_url, occurred_at FROM activity_log
+SELECT id, repo_pair, kind, direction, summary, url, series, series_url, forgejo_id, radicle_id, occurred_at FROM activity_log
 WHERE series = ?
 ORDER BY occurred_at DESC
 LIMIT ?
@@ -262,12 +268,12 @@ LIMIT ?
 // item it describes.
 func (s *Store) ActivityByID(id int64) (*ActivityEntry, error) {
 	row := s.db.QueryRow(`
-SELECT id, repo_pair, kind, direction, summary, url, series, series_url, occurred_at FROM activity_log
+SELECT id, repo_pair, kind, direction, summary, url, series, series_url, forgejo_id, radicle_id, occurred_at FROM activity_log
 WHERE id = ?
 `, id)
 	var e ActivityEntry
 	var occurredAt string
-	err := row.Scan(&e.ID, &e.RepoPair, &e.Kind, &e.Direction, &e.Summary, &e.URL, &e.Series, &e.SeriesURL, &occurredAt)
+	err := row.Scan(&e.ID, &e.RepoPair, &e.Kind, &e.Direction, &e.Summary, &e.URL, &e.Series, &e.SeriesURL, &e.ForgejoID, &e.RadicleID, &occurredAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -287,7 +293,7 @@ func scanActivityRows(rows *sql.Rows) ([]ActivityEntry, error) {
 	for rows.Next() {
 		var e ActivityEntry
 		var occurredAt string
-		if err := rows.Scan(&e.ID, &e.RepoPair, &e.Kind, &e.Direction, &e.Summary, &e.URL, &e.Series, &e.SeriesURL, &occurredAt); err != nil {
+		if err := rows.Scan(&e.ID, &e.RepoPair, &e.Kind, &e.Direction, &e.Summary, &e.URL, &e.Series, &e.SeriesURL, &e.ForgejoID, &e.RadicleID, &occurredAt); err != nil {
 			return nil, err
 		}
 		var err error
@@ -424,7 +430,7 @@ ON CONFLICT (series) DO UPDATE SET last_delivered_id = excluded.last_delivered_i
 // id > afterID, oldest first — the delivery order for ActivityPub.
 func (s *Store) NewActivityForSeries(series string, afterID int64) ([]ActivityEntry, error) {
 	rows, err := s.db.Query(`
-SELECT id, repo_pair, kind, direction, summary, url, series, series_url, occurred_at FROM activity_log
+SELECT id, repo_pair, kind, direction, summary, url, series, series_url, forgejo_id, radicle_id, occurred_at FROM activity_log
 WHERE series = ? AND id > ?
 ORDER BY id ASC
 `, series, afterID)
