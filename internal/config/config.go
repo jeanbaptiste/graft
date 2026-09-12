@@ -17,6 +17,10 @@ type Config struct {
 	// SourceURL is graft's own source repository, shown in the status
 	// dashboard's footer. Optional.
 	SourceURL string `yaml:"source_url"`
+	// PublicHost is the hostname graft is reachable at (e.g.
+	// graft.cyberwild.org), used to build ActivityPub actor/acct URIs.
+	// Required only if any series should be reachable over ActivityPub.
+	PublicHost string `yaml:"public_host"`
 }
 
 // RepoPair links one Forgejo repository to one Radicle repository and

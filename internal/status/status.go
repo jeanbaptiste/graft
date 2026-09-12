@@ -47,9 +47,10 @@ type Tracker struct {
 	store     *state.Store
 	sourceURL string
 
-	mu       sync.Mutex
-	pairs    map[string]PairResult
-	topology map[string][]ServerRef
+	mu         sync.Mutex
+	pairs      map[string]PairResult
+	topology   map[string][]ServerRef
+	publicHost string
 }
 
 func NewTracker(store *state.Store, sourceURL string) *Tracker {
@@ -64,6 +65,15 @@ func (t *Tracker) SetTopology(topology map[string][]ServerRef) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.topology = topology
+}
+
+// SetPublicHost declares the host graft is reachable at (e.g.
+// graft.cyberwild.org), enabling the "Social bridges" link and the
+// /social page. Call with "" (the default) to leave ActivityPub disabled.
+func (t *Tracker) SetPublicHost(host string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.publicHost = host
 }
 
 // Record stores the outcome of a pass for one pair. Pass nil for a scope
@@ -126,6 +136,7 @@ func (t *Tracker) Handler() http.Handler {
 	})
 
 	mux.HandleFunc("/", t.serveDashboard)
+	mux.HandleFunc("/social", t.serveSocial)
 
 	return mux
 }
@@ -148,12 +159,14 @@ func (t *Tracker) serveDashboard(w http.ResponseWriter, r *http.Request) {
 
 	t.mu.Lock()
 	topology := t.topology
+	publicHost := t.publicHost
 	t.mu.Unlock()
 
 	data := dashboardData{
-		Series:    buildSeriesRows(entries, health, topology),
-		Activity:  recentActivity(entries),
-		SourceURL: t.sourceURL,
+		Series:        buildSeriesRows(entries, health, topology),
+		Activity:      recentActivity(entries),
+		SourceURL:     t.sourceURL,
+		SocialEnabled: publicHost != "",
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
@@ -162,10 +175,67 @@ func (t *Tracker) serveDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// socialData is what the /social page renders: one row per series
+// describing its ActivityPub and AT Proto/Bluesky bridges. Built
+// incrementally across the v2 milestones — see the plan for what each
+// stage adds (follower counts, delivery timestamps, bridged-comment
+// counts, Bluesky status).
+type socialData struct {
+	PublicHost string
+	Series     []socialRow
+	SourceURL  string
+}
+
+type socialRow struct {
+	Name         string
+	Handle       string // "series@host"
+	WebfingerURL string
+	ActorURL     string
+	OutboxURL    string
+}
+
+func (t *Tracker) serveSocial(w http.ResponseWriter, r *http.Request) {
+	t.mu.Lock()
+	topology := t.topology
+	publicHost := t.publicHost
+	t.mu.Unlock()
+
+	if publicHost == "" {
+		http.NotFound(w, r)
+		return
+	}
+
+	names := make([]string, 0, len(topology))
+	for name := range topology {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	rows := make([]socialRow, 0, len(names))
+	for _, name := range names {
+		actorURL := "https://" + publicHost + "/actors/" + name
+		rows = append(rows, socialRow{
+			Name:         name,
+			Handle:       name + "@" + publicHost,
+			WebfingerURL: "https://" + publicHost + "/.well-known/webfinger?resource=acct:" + name + "@" + publicHost,
+			ActorURL:     actorURL,
+			OutboxURL:    actorURL + "/outbox",
+		})
+	}
+
+	data := socialData{PublicHost: publicHost, Series: rows, SourceURL: t.sourceURL}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	if err := socialTmpl.Execute(w, data); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
 type dashboardData struct {
-	Series    []seriesRow
-	Activity  []commitLine
-	SourceURL string
+	Series        []seriesRow
+	Activity      []commitLine
+	SourceURL     string
+	SocialEnabled bool
 }
 
 // pairStatus is one badge in the dashboard's top status card: one per
@@ -489,8 +559,11 @@ var dashboardTmpl = template.Must(template.New("dashboard").Parse(`<!doctype htm
   main { max-width: 920px; margin: 0 auto; padding: 2.5rem 1.5rem 1rem; }
 
   .top { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 1.5rem; }
+  .top > div { display: flex; align-items: baseline; gap: .6rem; }
   h1 { font-size: 1.25rem; margin: 0; font-weight: 600; }
   .sub { color: var(--text-muted); font-size: .85rem; }
+  .nav-link { color: var(--brand); font-size: .82rem; text-decoration: none; font-weight: 500; }
+  .nav-link:hover { text-decoration: underline; }
 
   .card {
     background: var(--surface);
@@ -598,8 +671,11 @@ var dashboardTmpl = template.Must(template.New("dashboard").Parse(`<!doctype htm
 <body>
 <main>
   <div class="top">
-    <h1>graft</h1>
-    <span class="sub">Forgejo &lt;-&gt; Radicle sync — last 3 days</span>
+    <div>
+      <h1>graft</h1>
+      <span class="sub">Forgejo &lt;-&gt; Radicle sync — last 3 days</span>
+    </div>
+    {{if .SocialEnabled}}<a class="nav-link" href="/social">Social bridges &rarr;</a>{{end}}
   </div>
 
   <div class="card">
@@ -675,6 +751,93 @@ var dashboardTmpl = template.Must(template.New("dashboard").Parse(`<!doctype htm
       <p class="empty">nothing mirrored yet</p>
     {{end}}
     </div>
+  </div>
+</main>
+<footer>
+  {{if .SourceURL}}<a href="{{.SourceURL}}" target="_blank" rel="noopener">{{.SourceURL}}</a>{{end}}
+  <span>GPLv3</span>
+</footer>
+</body>
+</html>
+`))
+
+var socialTmpl = template.Must(template.New("social").Parse(`<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>graft — social bridges</title>
+<style>
+  :root {
+    color-scheme: light;
+    --surface:      #ffffff;
+    --surface-sunk:  #f4f5f7;
+    --text:         #172b4d;
+    --text-muted:   #6b778c;
+    --border:       #dfe1e6;
+    --brand:        #0052cc;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--surface-sunk); color: var(--text);
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  main { max-width: 760px; margin: 0 auto; padding: 2.5rem 1.5rem 1rem; }
+  .top { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 1.5rem; }
+  .top > div { display: flex; align-items: baseline; gap: .6rem; }
+  h1 { font-size: 1.25rem; margin: 0; font-weight: 600; }
+  .sub { color: var(--text-muted); font-size: .85rem; }
+  .nav-link { color: var(--brand); font-size: .82rem; text-decoration: none; font-weight: 500; }
+  .nav-link:hover { text-decoration: underline; }
+  .card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 4px;
+    padding: 1.25rem 1.5rem; margin-bottom: 1.25rem;
+  }
+  .series-block { padding: .75rem 0; border-bottom: 1px solid var(--border); }
+  .series-block:last-child { border-bottom: none; }
+  .handle { font-size: .95rem; font-weight: 600; color: var(--text); }
+  h2 { font-size: .78rem; text-transform: uppercase; letter-spacing: .04em; color: var(--text-muted); margin: .6rem 0 .4rem; font-weight: 600; }
+  .endpoints { display: flex; flex-direction: column; gap: .3rem; }
+  .endpoints a { font-size: .8rem; color: var(--brand); text-decoration: none; font-family: ui-monospace, monospace; }
+  .endpoints a:hover { text-decoration: underline; }
+  .badge {
+    display: inline-block; font-size: .72rem; color: var(--text-muted); background: var(--surface-sunk);
+    border: 1px solid var(--border); border-radius: 3px; padding: .15rem .5rem; margin-top: .4rem;
+  }
+  .empty { color: var(--text-muted); padding: .5rem 0; }
+  footer {
+    max-width: 760px; margin: 0 auto; padding: 1rem 1.5rem 2.5rem;
+    color: var(--text-muted); font-size: .78rem; display: flex; gap: 1rem;
+  }
+  footer a { color: var(--text-muted); }
+</style>
+</head>
+<body>
+<main>
+  <div class="top">
+    <div>
+      <h1>graft — social bridges</h1>
+      <span class="sub">ActivityPub + AT Proto, per repo</span>
+    </div>
+    <a class="nav-link" href="/">&larr; Dashboard</a>
+  </div>
+
+  <div class="card">
+  {{range .Series}}
+    <div class="series-block">
+      <div class="handle">@{{.Handle}}</div>
+      <h2>ActivityPub</h2>
+      <div class="endpoints">
+        <a href="{{.WebfingerURL}}" target="_blank" rel="noopener">WebFinger</a>
+        <a href="{{.ActorURL}}" target="_blank" rel="noopener">Actor</a>
+        <a href="{{.OutboxURL}}" target="_blank" rel="noopener">Outbox</a>
+      </div>
+      <h2>AT Proto / Bluesky</h2>
+      <span class="badge">not configured</span>
+    </div>
+  {{else}}
+    <span class="empty">no series configured</span>
+  {{end}}
   </div>
 </main>
 <footer>

@@ -8,6 +8,12 @@ state_db: /var/lib/graft/state.db
 # Shown in the status dashboard's footer. Optional.
 source_url: https://git.example.org/alice/graft
 
+# Hostname graft is publicly reachable at. Setting this enables ActivityPub:
+# every series becomes a followable actor (e.g. testrepo@graft.example.org)
+# whose outbox mirrors its activity log, with a status page at /social.
+# Optional — leave unset to keep graft ActivityPub-free.
+public_host: graft.example.org
+
 repos:
   - name: testrepo
     # Groups this pair with others that mirror the same underlying repo
