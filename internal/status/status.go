@@ -32,6 +32,14 @@ func (r PairResult) ok() bool {
 	return r.GitError == "" && r.IssuesError == "" && r.PatchError == ""
 }
 
+// ServerRef is one repo pair's declared mirror target — a specific Forgejo
+// instance or a specific Radicle node — as configured, regardless of
+// whether it has ever actually produced an event yet.
+type ServerRef struct {
+	Label string // host, e.g. "f1.cyberwild.org"
+	URL   string // repo root on that host
+}
+
 // Tracker holds the latest result per repo pair, safe for concurrent use,
 // plus a handle on the state store for the activity dashboard.
 type Tracker struct {
@@ -39,12 +47,23 @@ type Tracker struct {
 	store     *state.Store
 	sourceURL string
 
-	mu    sync.Mutex
-	pairs map[string]PairResult
+	mu       sync.Mutex
+	pairs    map[string]PairResult
+	topology map[string][]ServerRef
 }
 
 func NewTracker(store *state.Store, sourceURL string) *Tracker {
 	return &Tracker{startedAt: time.Now(), store: store, sourceURL: sourceURL, pairs: map[string]PairResult{}}
+}
+
+// SetTopology declares every mirror target configured for each series, so
+// the dashboard can show a side that's never produced an event yet (e.g. a
+// Radicle node nothing has been pushed to) instead of only sides the
+// activity log happens to mention.
+func (t *Tracker) SetTopology(topology map[string][]ServerRef) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.topology = topology
 }
 
 // Record stores the outcome of a pass for one pair. Pass nil for a scope
@@ -127,8 +146,12 @@ func (t *Tracker) serveDashboard(w http.ResponseWriter, r *http.Request) {
 		health[p.Name] = p.OK
 	}
 
+	t.mu.Lock()
+	topology := t.topology
+	t.mu.Unlock()
+
 	data := dashboardData{
-		Series:    buildSeriesRows(entries, health),
+		Series:    buildSeriesRows(entries, health, topology),
 		Activity:  recentActivity(entries),
 		SourceURL: t.sourceURL,
 	}
@@ -260,7 +283,7 @@ func hostLabel(rawURL string) string {
 // Statuspage style: one full-width horizontal strip per series. Each entry
 // becomes its own cell, oldest first, so a busy day never hides events
 // behind one shared tooltip.
-func buildSeriesRows(entries []state.ActivityEntry, health map[string]bool) []seriesRow {
+func buildSeriesRows(entries []state.ActivityEntry, health map[string]bool, topology map[string][]ServerRef) []seriesRow {
 	type subAcc struct {
 		url    string
 		events []state.ActivityEntry
@@ -271,17 +294,45 @@ func buildSeriesRows(entries []state.ActivityEntry, health map[string]bool) []se
 	}
 	seriesAccs := map[string]*seriesAcc{}
 	var seriesOrder []string
-	for _, e := range entries {
-		name := e.Series
-		if name == "" {
-			name = e.RepoPair
-		}
+
+	ensureSeries := func(name string) *seriesAcc {
 		sa, ok := seriesAccs[name]
 		if !ok {
 			sa = &seriesAcc{subs: map[string]*subAcc{}}
 			seriesAccs[name] = sa
 			seriesOrder = append(seriesOrder, name)
 		}
+		return sa
+	}
+	ensureSub := func(sa *seriesAcc, label string) *subAcc {
+		sub, ok := sa.subs[label]
+		if !ok {
+			sub = &subAcc{}
+			sa.subs[label] = sub
+			sa.subOrder = append(sa.subOrder, label)
+		}
+		return sub
+	}
+
+	// Seed every configured mirror target first, so a side that has never
+	// produced an event (e.g. a Radicle node nothing has been pushed to
+	// yet) still gets its own row instead of being invisible.
+	for name, refs := range topology {
+		sa := ensureSeries(name)
+		for _, ref := range refs {
+			sub := ensureSub(sa, ref.Label)
+			if sub.url == "" {
+				sub.url = ref.URL
+			}
+		}
+	}
+
+	for _, e := range entries {
+		name := e.Series
+		if name == "" {
+			name = e.RepoPair
+		}
+		sa := ensureSeries(name)
 		server := hostLabel(e.URL)
 		if server == "" {
 			server = serverLabel(e.RepoPair, e.Series)
@@ -289,12 +340,7 @@ func buildSeriesRows(entries []state.ActivityEntry, health map[string]bool) []se
 		if server == "" {
 			server = e.RepoPair
 		}
-		sub, ok := sa.subs[server]
-		if !ok {
-			sub = &subAcc{}
-			sa.subs[server] = sub
-			sa.subOrder = append(sa.subOrder, server)
-		}
+		sub := ensureSub(sa, server)
 		if sub.url == "" {
 			sub.url = repoRootURL(e.URL)
 		}
