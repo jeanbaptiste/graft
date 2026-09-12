@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/url"
 	"path/filepath"
+	"strings"
 
 	"graft/internal/config"
 	"graft/internal/forgejo"
@@ -40,11 +41,15 @@ func New(pair config.RepoPair, st *state.Store, workDir string) (*RepoSyncer, er
 
 	rs := &RepoSyncer{pair: pair, forgejo: fc, radicle: rc}
 
+	forgejoWebURL := strings.TrimRight(pair.Forgejo.BaseURL, "/") + "/" + pair.Forgejo.Owner + "/" + pair.Forgejo.Repo
+	radicleWebURL := radicleExplorerLink(pair.Radicle)
+
 	if pair.Sync.Git || pair.Sync.Patches {
 		rs.git = &GitSyncer{
 			RepoPair:      pair.Name,
 			WorkDir:       workDir,
 			ForgejoURL:    authenticatedCloneURL(repo.CloneURL, token),
+			ForgejoWebURL: forgejoWebURL,
 			ForgejoBranch: repo.DefaultBranch,
 			RID:           pair.Radicle.RID,
 			RadHome:       pair.Radicle.RadHome,
@@ -52,7 +57,10 @@ func New(pair config.RepoPair, st *state.Store, workDir string) (*RepoSyncer, er
 		}
 	}
 	if pair.Sync.Issues {
-		rs.issues = &IssueSyncer{RepoPair: pair.Name, Forgejo: fc, Radicle: rc, State: st}
+		rs.issues = &IssueSyncer{
+			RepoPair: pair.Name, Forgejo: fc, Radicle: rc, State: st,
+			ForgejoWebURL: forgejoWebURL, RadicleWebURL: radicleWebURL,
+		}
 	}
 	if pair.Sync.Patches {
 		rs.patches = &PatchSyncer{
@@ -63,9 +71,25 @@ func New(pair config.RepoPair, st *state.Store, workDir string) (*RepoSyncer, er
 			Forgejo:       fc,
 			Radicle:       rc,
 			State:         st,
+			ForgejoWebURL: forgejoWebURL,
+			RadicleWebURL: radicleWebURL,
 		}
 	}
 	return rs, nil
+}
+
+// radicleExplorerLink builds the base URL for "view this on Radicle" links:
+// <explorer>/nodes/<httpd-host>/<rid>. Empty if no explorer_url is
+// configured, so templates can skip the link entirely.
+func radicleExplorerLink(rt config.RadicleTarget) string {
+	if rt.ExplorerURL == "" {
+		return ""
+	}
+	host := rt.HTTPBaseURL
+	if u, err := url.Parse(rt.HTTPBaseURL); err == nil && u.Host != "" {
+		host = u.Host
+	}
+	return strings.TrimRight(rt.ExplorerURL, "/") + "/nodes/" + host + "/" + rt.RID
 }
 
 // Name is this pair's name, as given in the config.

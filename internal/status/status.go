@@ -6,11 +6,9 @@ package status
 
 import (
 	"encoding/json"
-	"fmt"
 	"html/template"
 	"net/http"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 
@@ -36,13 +34,14 @@ func (r PairResult) ok() bool {
 type Tracker struct {
 	startedAt time.Time
 	store     *state.Store
+	sourceURL string
 
 	mu    sync.Mutex
 	pairs map[string]PairResult
 }
 
-func NewTracker(store *state.Store) *Tracker {
-	return &Tracker{startedAt: time.Now(), store: store, pairs: map[string]PairResult{}}
+func NewTracker(store *state.Store, sourceURL string) *Tracker {
+	return &Tracker{startedAt: time.Now(), store: store, sourceURL: sourceURL, pairs: map[string]PairResult{}}
 }
 
 // Record stores the outcome of a pass for one pair. Pass nil for a scope
@@ -81,9 +80,9 @@ type statusResponse struct {
 
 // Handler serves:
 //
-//	GET /healthz  - 200 if every pair's last pass was clean, 503 otherwise
+//	GET /healthz    - 200 if every pair's last pass was clean, 503 otherwise
 //	GET /api/status - the JSON snapshot Record() has been fed
-//	GET /        - the activity dashboard (calendar + recent commits)
+//	GET /           - the activity dashboard (calendar + recent commits)
 func (t *Tracker) Handler() http.Handler {
 	mux := http.NewServeMux()
 
@@ -119,9 +118,10 @@ func (t *Tracker) serveDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	data := dashboardData{
-		Pairs:   t.snapshot(),
-		Weeks:   buildCalendar(entries, since),
-		Commits: recentCommits(entries),
+		Pairs:     t.snapshot(),
+		Weeks:     buildCalendar(entries, since),
+		Commits:   recentCommits(entries),
+		SourceURL: t.sourceURL,
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := dashboardTmpl.Execute(w, data); err != nil {
@@ -130,23 +130,32 @@ func (t *Tracker) serveDashboard(w http.ResponseWriter, r *http.Request) {
 }
 
 type dashboardData struct {
-	Pairs   []PairResult
-	Weeks   [][]day
-	Commits []commitLine
+	Pairs     []PairResult
+	Weeks     [][]day
+	Commits   []commitLine
+	SourceURL string
 }
 
 type day struct {
-	Date    string // YYYY-MM-DD
+	Date    string // YYYY-MM-DD, human-readable
 	Count   int
 	Level   int // 0-4, for the color ramp
-	Tooltip string
+	Events  []event
 	InRange bool
+}
+
+// event is one activity_log row, shaped for the tooltip's clickable list.
+type event struct {
+	Label string // "3 commits", "1 issue", etc. joined for the summary line
+	Text  string
+	URL   string
 }
 
 type commitLine struct {
 	When    string
 	Pair    string
 	Message string
+	URL     string
 }
 
 // buildCalendar buckets entries by day and lays them out GitHub-style:
@@ -170,10 +179,10 @@ func buildCalendar(entries []state.ActivityEntry, since time.Time) [][]day {
 		key := d.Format("2006-01-02")
 		es := byDay[key]
 		week = append(week, day{
-			Date:    key,
+			Date:    d.Format("Jan 2, 2006"),
 			Count:   len(es),
 			Level:   levelFor(len(es)),
-			Tooltip: tooltipFor(key, es),
+			Events:  toEvents(es),
 			InRange: !d.Before(since),
 		})
 		if d.Weekday() == time.Saturday {
@@ -202,31 +211,29 @@ func levelFor(count int) int {
 	}
 }
 
-func tooltipFor(date string, es []state.ActivityEntry) string {
-	if len(es) == 0 {
-		return date + ": nothing synced"
-	}
-	byKind := map[string]int{}
+func toEvents(es []state.ActivityEntry) []event {
+	out := make([]event, 0, len(es))
 	for _, e := range es {
-		byKind[e.Kind]++
+		out = append(out, event{
+			Label: kindLabel(e.Kind),
+			Text:  e.Summary,
+			URL:   e.URL,
+		})
 	}
-	var parts []string
-	for _, k := range []string{"git", "issue", "patch"} {
-		if n := byKind[k]; n > 0 {
-			parts = append(parts, fmt.Sprintf("%d %s", n, plural(k, n)))
-		}
-	}
-	return fmt.Sprintf("%s: %s", date, strings.Join(parts, ", "))
+	return out
 }
 
-func plural(word string, n int) string {
-	if n == 1 {
-		return word
+func kindLabel(kind string) string {
+	switch kind {
+	case "git":
+		return "Commit"
+	case "issue":
+		return "Issue"
+	case "patch":
+		return "Patch"
+	default:
+		return kind
 	}
-	if word == "patch" {
-		return "patches"
-	}
-	return word + "s"
 }
 
 func recentCommits(entries []state.ActivityEntry) []commitLine {
@@ -236,9 +243,10 @@ func recentCommits(entries []state.ActivityEntry) []commitLine {
 			continue
 		}
 		out = append(out, commitLine{
-			When:    e.OccurredAt.Format("2006-01-02 15:04"),
+			When:    e.OccurredAt.Format("Jan 2, 15:04"),
 			Pair:    e.RepoPair,
 			Message: e.Summary,
+			URL:     e.URL,
 		})
 	}
 	return out
@@ -248,60 +256,60 @@ var dashboardTmpl = template.Must(template.New("dashboard").Parse(`<!doctype htm
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>graft</title>
 <style>
   :root {
     color-scheme: light;
-    --surface:    #fcfcfb;
-    --text:       #0b0b0b;
-    --text-muted: #52514e;
-    --border:     #e4e2dc;
-    --cell-0:     #ebedf0;
-    --cell-1:     #cde2fb;
-    --cell-2:     #86b6ef;
-    --cell-3:     #3987e5;
-    --cell-4:     #184f95;
-    --bad:        #d03b3b;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      color-scheme: dark;
-      --surface:    #1a1a19;
-      --text:       #ffffff;
-      --text-muted: #c3c2b7;
-      --border:     #33322e;
-      --cell-0:     #22252a;
-      --cell-1:     #16324d;
-      --cell-2:     #1c5cab;
-      --cell-3:     #3987e5;
-      --cell-4:     #86b6ef;
-      --bad:        #e66767;
-    }
+    --surface:      #ffffff;
+    --surface-sunk:  #f4f5f7;
+    --text:         #172b4d;
+    --text-muted:   #6b778c;
+    --border:       #dfe1e6;
+    --brand:        #0052cc;
+    --brand-dark:   #0747a6;
+    --cell-0:       #f4f5f7;
+    --cell-1:       #cde2fb;
+    --cell-2:       #86b6ef;
+    --cell-3:       #3987e5;
+    --cell-4:       #184f95;
+    --bad:          #de350b;
+    --good:         #36b37e;
   }
   * { box-sizing: border-box; }
   body {
     margin: 0;
-    padding: 2.5rem 1.5rem;
-    background: var(--surface);
+    background: var(--surface-sunk);
     color: var(--text);
-    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   }
-  main { max-width: 900px; margin: 0 auto; }
-  h1 { font-size: 1.1rem; margin: 0 0 .25rem; }
-  .sub { color: var(--text-muted); margin: 0 0 2rem; }
+  main { max-width: 920px; margin: 0 auto; padding: 2.5rem 1.5rem 1rem; }
 
-  .pairs { display: flex; flex-wrap: wrap; gap: .5rem; margin-bottom: 2rem; }
-  .pair {
-    border: 1px solid var(--border); border-radius: 6px;
-    padding: .4rem .7rem; font-size: .8rem; display: flex; align-items: center; gap: .4rem;
+  .top { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 1.5rem; }
+  h1 { font-size: 1.25rem; margin: 0; font-weight: 600; }
+  .sub { color: var(--text-muted); font-size: .85rem; }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 1.25rem 1.5rem;
+    margin-bottom: 1.25rem;
   }
-  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--cell-3); flex: none; }
+
+  .pairs { display: flex; flex-wrap: wrap; gap: .5rem; }
+  .pair {
+    border: 1px solid var(--border); border-radius: 3px; background: var(--surface-sunk);
+    padding: .35rem .65rem; font-size: .78rem; display: flex; align-items: center; gap: .4rem;
+  }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--good); flex: none; }
   .dot.bad { background: var(--bad); }
 
-  .calendar { display: flex; gap: 3px; margin-bottom: 2rem; overflow-x: auto; padding-bottom: .5rem; }
+  .calendar-scroll { overflow-x: auto; overflow-y: visible; padding: 20px 0 4px; }
+  .calendar { display: flex; gap: 3px; width: max-content; }
   .week { display: flex; flex-direction: column; gap: 3px; }
   .cell {
-    width: 11px; height: 11px; border-radius: 2px;
+    width: 12px; height: 12px; border-radius: 2px;
     background: var(--cell-0); position: relative; cursor: default;
   }
   .cell[data-level="1"] { background: var(--cell-1); }
@@ -310,63 +318,114 @@ var dashboardTmpl = template.Must(template.New("dashboard").Parse(`<!doctype htm
   .cell[data-level="4"] { background: var(--cell-4); }
   .cell[data-out-of-range="1"] { visibility: hidden; }
 
-  .cell .tip {
-    display: none; position: absolute; bottom: 150%; left: 50%; transform: translateX(-50%);
-    background: var(--text); color: var(--surface); padding: .3rem .5rem; border-radius: 4px;
-    font-size: .72rem; white-space: nowrap; z-index: 1; pointer-events: none;
+  .tip {
+    display: none; position: absolute; bottom: calc(100% + 6px); left: 50%; transform: translateX(-50%);
+    background: var(--text); color: #fff; border-radius: 6px;
+    font-size: .78rem; white-space: nowrap; z-index: 10; padding: .5rem 0;
+    box-shadow: 0 4px 12px rgba(9,30,66,.25);
   }
-  .cell:hover .tip { display: block; }
+  .cell:hover .tip, .tip:hover { display: block; }
+  .tip .tip-date { padding: 0 .75rem .35rem; font-weight: 600; border-bottom: 1px solid rgba(255,255,255,.15); margin-bottom: .35rem; }
+  .tip a.tip-row {
+    display: block; padding: .3rem .75rem; color: #fff; text-decoration: none; white-space: nowrap;
+  }
+  .tip a.tip-row:hover { background: rgba(255,255,255,.12); }
+  .tip .tip-kind { color: #b3bac5; margin-right: .4em; }
+  .tip .tip-empty { padding: 0 .75rem; color: #b3bac5; }
 
-  h2 { font-size: .85rem; text-transform: uppercase; letter-spacing: .04em; color: var(--text-muted); margin: 0 0 .75rem; }
+  h2 { font-size: .78rem; text-transform: uppercase; letter-spacing: .04em; color: var(--text-muted); margin: 0 0 .9rem; font-weight: 600; }
   .commits { border-top: 1px solid var(--border); }
-  .commit { display: flex; gap: .75rem; padding: .5rem 0; border-bottom: 1px solid var(--border); font-size: .82rem; }
-  .commit .when { color: var(--text-muted); flex: none; width: 11em; }
+  a.commit {
+    display: flex; gap: .75rem; padding: .55rem 0; border-bottom: 1px solid var(--border);
+    font-size: .82rem; color: inherit; text-decoration: none;
+  }
+  a.commit:hover .msg { color: var(--brand); text-decoration: underline; }
+  .commit .when { color: var(--text-muted); flex: none; width: 9em; }
   .commit .pair { color: var(--text-muted); flex: none; width: 10em; }
-  .commit .msg { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .empty { color: var(--text-muted); padding: 1rem 0; }
+  .commit .msg { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: ui-monospace, monospace; }
+  .empty { color: var(--text-muted); padding: .5rem 0; }
+
+  footer {
+    max-width: 920px; margin: 0 auto; padding: 1rem 1.5rem 2.5rem;
+    color: var(--text-muted); font-size: .78rem; display: flex; gap: 1rem;
+  }
+  footer a { color: var(--text-muted); }
 </style>
 </head>
 <body>
 <main>
-  <h1>graft</h1>
-  <p class="sub">Forgejo &lt;-&gt; Radicle sync — last {{len .Weeks}} weeks</p>
-
-  <div class="pairs">
-  {{range .Pairs}}
-    <div class="pair">
-      <span class="dot{{if or .GitError .IssuesError .PatchError}} bad{{end}}"></span>
-      {{.Name}}
-    </div>
-  {{else}}
-    <span class="empty">no pairs configured</span>
-  {{end}}
+  <div class="top">
+    <h1>graft</h1>
+    <span class="sub">Forgejo &lt;-&gt; Radicle sync — last 90 days</span>
   </div>
 
-  <div class="calendar">
-  {{range .Weeks}}
-    <div class="week">
-    {{range .}}
-      <div class="cell" data-level="{{.Level}}" data-out-of-range="{{if not .InRange}}1{{end}}">
-        <span class="tip">{{.Tooltip}}</span>
+  <div class="card">
+    <div class="pairs">
+    {{range .Pairs}}
+      <div class="pair">
+        <span class="dot{{if or .GitError .IssuesError .PatchError}} bad{{end}}"></span>
+        {{.Name}}
       </div>
+    {{else}}
+      <span class="empty">no pairs configured</span>
     {{end}}
     </div>
-  {{end}}
   </div>
 
-  <h2>Recent commits</h2>
-  <div class="commits">
-  {{range .Commits}}
-    <div class="commit">
-      <span class="when">{{.When}}</span>
-      <span class="pair">{{.Pair}}</span>
-      <span class="msg">{{.Message}}</span>
+  <div class="card">
+    <div class="calendar-scroll">
+      <div class="calendar">
+      {{range .Weeks}}
+        <div class="week">
+        {{range .}}
+          <div class="cell" data-level="{{.Level}}" data-out-of-range="{{if not .InRange}}1{{end}}">
+            <div class="tip">
+              <div class="tip-date">{{.Date}}</div>
+              {{range .Events}}
+                {{if .URL}}
+                <a class="tip-row" href="{{.URL}}" target="_blank" rel="noopener"><span class="tip-kind">{{.Label}}</span>{{.Text}}</a>
+                {{else}}
+                <span class="tip-row"><span class="tip-kind">{{.Label}}</span>{{.Text}}</span>
+                {{end}}
+              {{else}}
+                <span class="tip-empty">nothing synced</span>
+              {{end}}
+            </div>
+          </div>
+        {{end}}
+        </div>
+      {{end}}
+      </div>
     </div>
-  {{else}}
-    <p class="empty">nothing mirrored yet</p>
-  {{end}}
+  </div>
+
+  <div class="card">
+    <h2>Recent commits</h2>
+    <div class="commits">
+    {{range .Commits}}
+      {{if .URL}}
+      <a class="commit" href="{{.URL}}" target="_blank" rel="noopener">
+        <span class="when">{{.When}}</span>
+        <span class="pair">{{.Pair}}</span>
+        <span class="msg">{{.Message}}</span>
+      </a>
+      {{else}}
+      <div class="commit">
+        <span class="when">{{.When}}</span>
+        <span class="pair">{{.Pair}}</span>
+        <span class="msg">{{.Message}}</span>
+      </div>
+      {{end}}
+    {{else}}
+      <p class="empty">nothing mirrored yet</p>
+    {{end}}
+    </div>
   </div>
 </main>
+<footer>
+  {{if .SourceURL}}<a href="{{.SourceURL}}" target="_blank" rel="noopener">{{.SourceURL}}</a>{{end}}
+  <span>GPLv3</span>
+</footer>
 </body>
 </html>
 `))

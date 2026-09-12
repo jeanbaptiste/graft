@@ -14,6 +14,9 @@ type Config struct {
 	SyncInterval time.Duration `yaml:"sync_interval"`
 	StateDB      string        `yaml:"state_db"`
 	Repos        []RepoPair    `yaml:"repos"`
+	// SourceURL is graft's own source repository, shown in the status
+	// dashboard's footer. Optional.
+	SourceURL string `yaml:"source_url"`
 }
 
 // RepoPair links one Forgejo repository to one Radicle repository and
@@ -44,6 +47,11 @@ type RadicleTarget struct {
 	RID         string `yaml:"rid"`
 	HTTPBaseURL string `yaml:"http_base_url"`
 	RadHome     string `yaml:"rad_home"`
+	// ExplorerURL is a Radicle Explorer deployment (e.g.
+	// https://app.radicle.xyz, or a self-hosted one) used to build "view
+	// this issue/patch" links in the status dashboard. Optional: links are
+	// omitted if unset.
+	ExplorerURL string `yaml:"explorer_url"`
 }
 
 // SyncScope selects which content types are synchronized for a repo pair.
