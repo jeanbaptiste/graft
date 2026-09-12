@@ -8,7 +8,9 @@ import (
 	"encoding/json"
 	"html/template"
 	"net/http"
+	"net/url"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -19,6 +21,7 @@ import (
 // error string means that scope is either disabled or succeeded.
 type PairResult struct {
 	Name        string    `json:"name"`
+	Series      string    `json:"series"`
 	LastRun     time.Time `json:"last_run"`
 	GitError    string    `json:"git_error,omitempty"`
 	IssuesError string    `json:"issues_error,omitempty"`
@@ -45,9 +48,10 @@ func NewTracker(store *state.Store, sourceURL string) *Tracker {
 }
 
 // Record stores the outcome of a pass for one pair. Pass nil for a scope
-// that succeeded or wasn't enabled.
-func (t *Tracker) Record(name string, gitErr, issuesErr, patchErr error) {
-	r := PairResult{Name: name, LastRun: time.Now()}
+// that succeeded or wasn't enabled. series is the dashboard row this pair's
+// status badge groups under (see config.RepoPair.Series).
+func (t *Tracker) Record(name, series string, gitErr, issuesErr, patchErr error) {
+	r := PairResult{Name: name, Series: series, LastRun: time.Now()}
 	if gitErr != nil {
 		r.GitError = gitErr.Error()
 	}
@@ -107,117 +111,233 @@ func (t *Tracker) Handler() http.Handler {
 	return mux
 }
 
-const dashboardDays = 90
+const dashboardDays = 3
 
 func (t *Tracker) serveDashboard(w http.ResponseWriter, r *http.Request) {
-	since := time.Now().UTC().AddDate(0, 0, -dashboardDays).Truncate(24 * time.Hour)
+	since := time.Now().UTC().AddDate(0, 0, -(dashboardDays - 1)).Truncate(24 * time.Hour)
 	entries, err := t.store.ActivitySince(since)
 	if err != nil {
 		http.Error(w, "load activity: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
+	pairs := groupPairStatus(t.snapshot())
+	health := make(map[string]bool, len(pairs))
+	for _, p := range pairs {
+		health[p.Name] = p.OK
+	}
+
 	data := dashboardData{
-		Pairs:     t.snapshot(),
-		Weeks:     buildCalendar(entries, since),
-		Commits:   recentCommits(entries),
+		Series:    buildSeriesRows(entries, health),
+		Activity:  recentActivity(entries),
 		SourceURL: t.sourceURL,
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
 	if err := dashboardTmpl.Execute(w, data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
 }
 
 type dashboardData struct {
-	Pairs     []PairResult
-	Weeks     [][]day
-	Commits   []commitLine
+	Series    []seriesRow
+	Activity  []commitLine
 	SourceURL string
 }
 
-type day struct {
-	Date    string // YYYY-MM-DD, human-readable
-	Count   int
-	Level   int // 0-4, for the color ramp
-	Events  []event
-	InRange bool
+// pairStatus is one badge in the dashboard's top status card: one per
+// series (repo), OK only if every pair mirroring that repo's last pass was
+// clean — grouped so a repo with 3 mirrored sides (e.g. two Forgejos plus
+// an external instance) shows one badge, not three.
+type pairStatus struct {
+	Name string
+	OK   bool
 }
 
-// event is one activity_log row, shaped for the tooltip's clickable list.
+func groupPairStatus(results []PairResult) []pairStatus {
+	order := []string{}
+	ok := map[string]bool{}
+	for _, r := range results {
+		name := r.Series
+		if name == "" {
+			name = r.Name
+		}
+		if _, seen := ok[name]; !seen {
+			order = append(order, name)
+			ok[name] = true
+		}
+		if !r.ok() {
+			ok[name] = false
+		}
+	}
+	sort.Strings(order)
+	out := make([]pairStatus, 0, len(order))
+	for _, name := range order {
+		out = append(out, pairStatus{Name: name, OK: ok[name]})
+	}
+	return out
+}
+
+// seriesRow is one full-width strip of the activity heatmap: everything
+// mirrored for one underlying repository (grouped across its Forgejo and
+// Radicle sides via config.RepoPair.Series), one cell per actual event —
+// not one per day — so nothing is ever aggregated behind a single tooltip.
+type seriesRow struct {
+	Name    string
+	OK      bool
+	SubRows []subRow
+}
+
+// subRow is one mirrored side of a series — one real repo (a specific
+// Forgejo instance, or a specific Radicle node) — shown once the series is
+// expanded, with only that side's own events and its own link. A series
+// with 3 mirrored sides (two Forgejos plus Radicle) gets 3 sub-rows, never
+// one link picked arbitrarily to represent all of them.
+type subRow struct {
+	Label  string
+	URL    string
+	Events []event
+}
+
+// event is one activity_log row: one heatmap cell, one tooltip, one link.
 type event struct {
-	Label string // "3 commits", "1 issue", etc. joined for the summary line
-	Text  string
-	URL   string
+	Kind   string // "git", "issue", "patch" — drives the cell's color
+	Label  string // "Commit", "Issue", "Patch"
+	Text   string
+	URL    string
+	Server string // which mirrored side this happened on, e.g. "f1", "alice"
+	When   string // human-readable timestamp, for the tooltip
 }
 
 type commitLine struct {
 	When    string
 	Pair    string
+	PairURL string
+	Server  string
+	Kind    string // "Commit", "Issue", "Patch"
 	Message string
 	URL     string
 }
 
-// buildCalendar buckets entries by day and lays them out GitHub-style:
-// one column per week, Sunday to Saturday down each column.
-func buildCalendar(entries []state.ActivityEntry, since time.Time) [][]day {
-	byDay := map[string][]state.ActivityEntry{}
-	for _, e := range entries {
-		key := e.OccurredAt.Format("2006-01-02")
-		byDay[key] = append(byDay[key], e)
+// serverLabel names which side of a series a repo_pair belongs to, e.g.
+// "federation-x-f1" under series "federation-x" becomes "f1". Several pairs
+// share one series row/badge, so without this an operator can't tell which
+// mirrored server (f1, f2, an external instance...) a given event actually
+// happened on. Empty if the pair name doesn't start with its series name.
+func serverLabel(repoPair, series string) string {
+	if series == "" {
+		return ""
 	}
-
-	start := since
-	for start.Weekday() != time.Sunday {
-		start = start.AddDate(0, 0, -1)
+	suffix := strings.TrimPrefix(repoPair, series+"-")
+	if suffix == repoPair {
+		return ""
 	}
-	today := time.Now().UTC().Truncate(24 * time.Hour)
-
-	var weeks [][]day
-	var week []day
-	for d := start; !d.After(today); d = d.AddDate(0, 0, 1) {
-		key := d.Format("2006-01-02")
-		es := byDay[key]
-		week = append(week, day{
-			Date:    d.Format("Jan 2, 2006"),
-			Count:   len(es),
-			Level:   levelFor(len(es)),
-			Events:  toEvents(es),
-			InRange: !d.Before(since),
-		})
-		if d.Weekday() == time.Saturday {
-			weeks = append(weeks, week)
-			week = nil
-		}
-	}
-	if len(week) > 0 {
-		weeks = append(weeks, week)
-	}
-	return weeks
+	return suffix
 }
 
-func levelFor(count int) int {
-	switch {
-	case count == 0:
-		return 0
-	case count <= 2:
-		return 1
-	case count <= 5:
-		return 2
-	case count <= 10:
-		return 3
-	default:
-		return 4
+// hostLabel shortens a URL's host to its canonical name for compact
+// display: the TLD is dropped ("f1.cyberwild.org" -> "f1.cyberwild",
+// "artefacts.bimr.net" -> "artefacts.bimr"), so every server — ours or an
+// external instance's — reads the same way, never a per-pair alias.
+func hostLabel(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Host == "" {
+		return ""
 	}
+	parts := strings.Split(u.Host, ".")
+	if len(parts) > 1 {
+		parts = parts[:len(parts)-1]
+	}
+	return strings.Join(parts, ".")
+}
+
+// buildSeriesRows groups entries by their Series (one row per monitored
+// repo, spanning both its Forgejo and Radicle sides) — Atlassian
+// Statuspage style: one full-width horizontal strip per series. Each entry
+// becomes its own cell, oldest first, so a busy day never hides events
+// behind one shared tooltip.
+func buildSeriesRows(entries []state.ActivityEntry, health map[string]bool) []seriesRow {
+	type subAcc struct {
+		url    string
+		events []state.ActivityEntry
+	}
+	type seriesAcc struct {
+		subOrder []string
+		subs     map[string]*subAcc
+	}
+	seriesAccs := map[string]*seriesAcc{}
+	var seriesOrder []string
+	for _, e := range entries {
+		name := e.Series
+		if name == "" {
+			name = e.RepoPair
+		}
+		sa, ok := seriesAccs[name]
+		if !ok {
+			sa = &seriesAcc{subs: map[string]*subAcc{}}
+			seriesAccs[name] = sa
+			seriesOrder = append(seriesOrder, name)
+		}
+		server := hostLabel(e.URL)
+		if server == "" {
+			server = serverLabel(e.RepoPair, e.Series)
+		}
+		if server == "" {
+			server = e.RepoPair
+		}
+		sub, ok := sa.subs[server]
+		if !ok {
+			sub = &subAcc{}
+			sa.subs[server] = sub
+			sa.subOrder = append(sa.subOrder, server)
+		}
+		if sub.url == "" {
+			sub.url = repoRootURL(e.URL)
+		}
+		sub.events = append(sub.events, e)
+	}
+	sort.Strings(seriesOrder)
+
+	rows := make([]seriesRow, 0, len(seriesOrder))
+	for _, name := range seriesOrder {
+		sa := seriesAccs[name]
+		subOrder := append([]string(nil), sa.subOrder...)
+		sort.Strings(subOrder)
+
+		subRows := make([]subRow, 0, len(subOrder))
+		for _, label := range subOrder {
+			sub := sa.subs[label]
+			// entries arrive newest-first (see ActivitySince); the
+			// heatmap reads left-to-right as oldest-to-newest.
+			es := make([]state.ActivityEntry, len(sub.events))
+			copy(es, sub.events)
+			sort.Slice(es, func(i, j int) bool { return es[i].OccurredAt.Before(es[j].OccurredAt) })
+			subRows = append(subRows, subRow{Label: label, URL: sub.url, Events: toEvents(es)})
+		}
+
+		ok, known := health[name]
+		if !known {
+			ok = true
+		}
+		rows = append(rows, seriesRow{Name: name, OK: ok, SubRows: subRows})
+	}
+	return rows
 }
 
 func toEvents(es []state.ActivityEntry) []event {
 	out := make([]event, 0, len(es))
 	for _, e := range es {
+		server := hostLabel(e.URL)
+		if server == "" {
+			server = serverLabel(e.RepoPair, e.Series)
+		}
 		out = append(out, event{
-			Label: kindLabel(e.Kind),
-			Text:  e.Summary,
-			URL:   e.URL,
+			Kind:   e.Kind,
+			Label:  kindLabel(e.Kind),
+			Text:   e.Summary,
+			URL:    e.URL,
+			Server: server,
+			When:   e.OccurredAt.Format("Mon, Jan 2, 15:04"),
 		})
 	}
 	return out
@@ -236,20 +356,52 @@ func kindLabel(kind string) string {
 	}
 }
 
-func recentCommits(entries []state.ActivityEntry) []commitLine {
-	var out []commitLine
+// recentActivity lists every mirrored event — commits, issues, and
+// patches/pull requests alike, newest first. graft doesn't mirror stars or
+// other social metadata: its sync scope is git content, issues, and
+// patches/PRs only (see config.SyncScope), so that's what shows up here.
+func recentActivity(entries []state.ActivityEntry) []commitLine {
+	out := make([]commitLine, 0, len(entries))
 	for _, e := range entries {
-		if e.Kind != "git" {
-			continue
+		name := e.Series
+		if name == "" {
+			name = e.RepoPair
+		}
+		server := hostLabel(e.URL)
+		if server == "" {
+			server = serverLabel(e.RepoPair, e.Series)
+		}
+		// The (server) parenthetical should point at that specific
+		// server's own repo, not the series' shared Radicle explorer
+		// link (which is fixed to whichever pair logged first).
+		pairURL := repoRootURL(e.URL)
+		if pairURL == "" {
+			pairURL = e.SeriesURL
 		}
 		out = append(out, commitLine{
 			When:    e.OccurredAt.Format("Jan 2, 15:04"),
-			Pair:    e.RepoPair,
+			Pair:    name,
+			PairURL: pairURL,
+			Server:  server,
+			Kind:    kindLabel(e.Kind),
 			Message: e.Summary,
 			URL:     e.URL,
 		})
 	}
 	return out
+}
+
+// repoRootURL trims an event's specific-item URL (a commit, issue, or
+// patch/PR page) back down to its repository root, e.g.
+// ".../owner/repo/commit/<sha>" -> ".../owner/repo". Empty if rawURL is
+// empty or doesn't contain a recognized item path.
+func repoRootURL(rawURL string) string {
+	for _, marker := range []string{"/commit/", "/issues/", "/pulls/", "/patches/"} {
+		if idx := strings.Index(rawURL, marker); idx >= 0 {
+			return rawURL[:idx]
+		}
+	}
+	return ""
 }
 
 var dashboardTmpl = template.Must(template.New("dashboard").Parse(`<!doctype html>
@@ -268,11 +420,9 @@ var dashboardTmpl = template.Must(template.New("dashboard").Parse(`<!doctype htm
     --border:       #dfe1e6;
     --brand:        #0052cc;
     --brand-dark:   #0747a6;
-    --cell-0:       #f4f5f7;
-    --cell-1:       #cde2fb;
-    --cell-2:       #86b6ef;
-    --cell-3:       #3987e5;
-    --cell-4:       #184f95;
+    --kind-git:     #0052cc;
+    --kind-issue:   #00875a;
+    --kind-patch:   #6554c0;
     --bad:          #de350b;
     --good:         #36b37e;
   }
@@ -297,52 +447,92 @@ var dashboardTmpl = template.Must(template.New("dashboard").Parse(`<!doctype htm
     margin-bottom: 1.25rem;
   }
 
-  .pairs { display: flex; flex-wrap: wrap; gap: .5rem; }
-  .pair {
-    border: 1px solid var(--border); border-radius: 3px; background: var(--surface-sunk);
-    padding: .35rem .65rem; font-size: .78rem; display: flex; align-items: center; gap: .4rem;
-  }
-  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--good); flex: none; }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--good); flex: none; display: inline-block; }
   .dot.bad { background: var(--bad); }
 
-  .calendar-scroll { overflow-x: auto; overflow-y: visible; padding: 20px 0 4px; }
-  .calendar { display: flex; gap: 3px; width: max-content; }
-  .week { display: flex; flex-direction: column; gap: 3px; }
-  .cell {
-    width: 12px; height: 12px; border-radius: 2px;
-    background: var(--cell-0); position: relative; cursor: default;
+  .heatmap-head { display: flex; align-items: baseline; justify-content: space-between; }
+  .heatmap-head h2 { margin: 0; }
+  .legend { display: flex; gap: .9rem; margin-bottom: .9rem; }
+  .legend span { display: flex; align-items: center; gap: .35rem; font-size: .74rem; color: var(--text-muted); }
+  .legend .sw { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
+  .legend .sw[data-kind="git"] { background: var(--kind-git); }
+  .legend .sw[data-kind="issue"] { background: var(--kind-issue); }
+  .legend .sw[data-kind="patch"] { background: var(--kind-patch); }
+  .heatmap { display: flex; flex-direction: column; gap: .15rem; }
+  .series-group { border-bottom: 1px solid var(--border); }
+  .series-group:last-child { border-bottom: none; }
+  .series-group[open] { padding-bottom: .5rem; }
+  .series-label {
+    display: flex; align-items: center; gap: .45rem; padding: .55rem 0;
+    cursor: pointer; list-style: none;
   }
-  .cell[data-level="1"] { background: var(--cell-1); }
-  .cell[data-level="2"] { background: var(--cell-2); }
-  .cell[data-level="3"] { background: var(--cell-3); }
-  .cell[data-level="4"] { background: var(--cell-4); }
-  .cell[data-out-of-range="1"] { visibility: hidden; }
+  .series-label::-webkit-details-marker { display: none; }
+  .series-label::before {
+    content: ""; width: 0; height: 0; flex: none;
+    border-style: solid; border-width: 4px 0 4px 5px;
+    border-color: transparent transparent transparent var(--text-muted);
+    transition: transform .12s ease;
+  }
+  .series-group[open] > .series-label::before { transform: rotate(90deg); }
+  .series-name { font-size: .82rem; font-weight: 600; color: var(--text); }
+  .series-count { font-size: .74rem; color: var(--text-muted); }
+  .subrows { display: flex; flex-direction: column; gap: .5rem; padding-left: 1.3rem; }
+  .subrow { display: flex; align-items: center; gap: .75rem; }
+  .subrow-name {
+    flex: 0 0 11rem; font-size: .78rem; color: var(--text-muted); text-decoration: none;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  a.subrow-name { color: var(--brand); }
+  a.subrow-name:hover { text-decoration: underline; }
+  .days { display: flex; gap: 3px; flex-wrap: wrap; }
+  .cell {
+    flex: none; width: 10px; height: 22px; border-radius: 3px;
+    background: var(--border); position: relative; cursor: default;
+  }
+  .cell[data-kind="git"] { background: var(--kind-git); }
+  .cell[data-kind="issue"] { background: var(--kind-issue); }
+  .cell[data-kind="patch"] { background: var(--kind-patch); }
 
   .tip {
-    display: none; position: absolute; bottom: calc(100% + 6px); left: 50%; transform: translateX(-50%);
+    display: none; position: absolute; top: calc(100% + 8px); left: 50%; transform: translateX(-50%);
     background: var(--text); color: #fff; border-radius: 6px;
-    font-size: .78rem; white-space: nowrap; z-index: 10; padding: .5rem 0;
+    font-size: .78rem; z-index: 20; padding: .5rem 0;
     box-shadow: 0 4px 12px rgba(9,30,66,.25);
+    width: max-content; max-width: min(320px, 90vw);
   }
+  .cell:nth-child(-n+2) .tip { left: 0; transform: none; }
+  .cell:nth-last-child(-n+2) .tip { left: auto; right: 0; transform: none; }
   .cell:hover .tip, .tip:hover { display: block; }
   .tip .tip-date { padding: 0 .75rem .35rem; font-weight: 600; border-bottom: 1px solid rgba(255,255,255,.15); margin-bottom: .35rem; }
   .tip a.tip-row {
-    display: block; padding: .3rem .75rem; color: #fff; text-decoration: none; white-space: nowrap;
+    display: flex; gap: .4em; padding: .3rem .75rem; color: #fff; text-decoration: none;
+    white-space: normal; overflow-wrap: anywhere; line-height: 1.35;
   }
   .tip a.tip-row:hover { background: rgba(255,255,255,.12); }
-  .tip .tip-kind { color: #b3bac5; margin-right: .4em; }
+  .tip .tip-kind { color: #b3bac5; flex: none; }
   .tip .tip-empty { padding: 0 .75rem; color: #b3bac5; }
 
   h2 { font-size: .78rem; text-transform: uppercase; letter-spacing: .04em; color: var(--text-muted); margin: 0 0 .9rem; font-weight: 600; }
   .commits { border-top: 1px solid var(--border); }
-  a.commit {
-    display: flex; gap: .75rem; padding: .55rem 0; border-bottom: 1px solid var(--border);
-    font-size: .82rem; color: inherit; text-decoration: none;
+  .commit {
+    display: flex; align-items: center; gap: .75rem; padding: .55rem 0; border-bottom: 1px solid var(--border);
+    font-size: .82rem;
   }
-  a.commit:hover .msg { color: var(--brand); text-decoration: underline; }
   .commit .when { color: var(--text-muted); flex: none; width: 9em; }
-  .commit .pair { color: var(--text-muted); flex: none; width: 10em; }
-  .commit .msg { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: ui-monospace, monospace; }
+  .commit .kind { color: var(--text-muted); flex: none; width: 4.5em; font-size: .74rem; text-transform: uppercase; letter-spacing: .03em; }
+  .commit .pair {
+    color: var(--text-muted); flex: 0 1 auto; max-width: 22em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    text-decoration: none;
+  }
+  .commit a.pair { color: var(--brand); }
+  .commit a.pair:hover { text-decoration: underline; }
+  .commit .msg {
+    flex: 1 1 auto; min-width: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: ui-monospace, monospace;
+    color: inherit; text-decoration: none;
+  }
+  .commit a.msg { color: var(--brand); }
+  .commit a.msg:hover { text-decoration: underline; }
   .empty { color: var(--text-muted); padding: .5rem 0; }
 
   footer {
@@ -356,66 +546,78 @@ var dashboardTmpl = template.Must(template.New("dashboard").Parse(`<!doctype htm
 <main>
   <div class="top">
     <h1>graft</h1>
-    <span class="sub">Forgejo &lt;-&gt; Radicle sync — last 90 days</span>
+    <span class="sub">Forgejo &lt;-&gt; Radicle sync — last 3 days</span>
   </div>
 
   <div class="card">
-    <div class="pairs">
-    {{range .Pairs}}
-      <div class="pair">
-        <span class="dot{{if or .GitError .IssuesError .PatchError}} bad{{end}}"></span>
-        {{.Name}}
+    <div class="heatmap-head">
+      <h2>Activity by repo</h2>
+      <div class="legend">
+        <span><i class="sw" data-kind="git"></i>Commit</span>
+        <span><i class="sw" data-kind="issue"></i>Issue</span>
+        <span><i class="sw" data-kind="patch"></i>Patch</span>
       </div>
+    </div>
+    <div class="heatmap">
+    {{range .Series}}
+      <details class="series-group">
+        <summary class="series-label">
+          <span class="dot{{if not .OK}} bad{{end}}"></span>
+          <span class="series-name">{{.Name}}</span>
+          <span class="series-count">{{len .SubRows}} mirrored side{{if ne (len .SubRows) 1}}s{{end}}</span>
+        </summary>
+        <div class="subrows">
+        {{range .SubRows}}
+          <div class="subrow">
+            {{if .URL}}
+            <a class="subrow-name" href="{{.URL}}" target="_blank" rel="noopener">{{.Label}}</a>
+            {{else}}
+            <span class="subrow-name">{{.Label}}</span>
+            {{end}}
+            <div class="days">
+            {{range .Events}}
+              <div class="cell" data-kind="{{.Kind}}">
+                <div class="tip">
+                  <div class="tip-date">{{.When}}</div>
+                  {{if .URL}}
+                  <a class="tip-row" href="{{.URL}}" target="_blank" rel="noopener"><span class="tip-kind">{{.Label}}</span>{{.Text}}</a>
+                  {{else}}
+                  <span class="tip-row"><span class="tip-kind">{{.Label}}</span>{{.Text}}</span>
+                  {{end}}
+                </div>
+              </div>
+            {{else}}
+              <span class="tip-empty">nothing synced</span>
+            {{end}}
+            </div>
+          </div>
+        {{end}}
+        </div>
+      </details>
     {{else}}
-      <span class="empty">no pairs configured</span>
+      <span class="empty">nothing synced yet</span>
     {{end}}
     </div>
   </div>
 
   <div class="card">
-    <div class="calendar-scroll">
-      <div class="calendar">
-      {{range .Weeks}}
-        <div class="week">
-        {{range .}}
-          <div class="cell" data-level="{{.Level}}" data-out-of-range="{{if not .InRange}}1{{end}}">
-            <div class="tip">
-              <div class="tip-date">{{.Date}}</div>
-              {{range .Events}}
-                {{if .URL}}
-                <a class="tip-row" href="{{.URL}}" target="_blank" rel="noopener"><span class="tip-kind">{{.Label}}</span>{{.Text}}</a>
-                {{else}}
-                <span class="tip-row"><span class="tip-kind">{{.Label}}</span>{{.Text}}</span>
-                {{end}}
-              {{else}}
-                <span class="tip-empty">nothing synced</span>
-              {{end}}
-            </div>
-          </div>
-        {{end}}
-        </div>
-      {{end}}
-      </div>
-    </div>
-  </div>
-
-  <div class="card">
-    <h2>Recent commits</h2>
+    <h2>Recent activity</h2>
     <div class="commits">
-    {{range .Commits}}
-      {{if .URL}}
-      <a class="commit" href="{{.URL}}" target="_blank" rel="noopener">
-        <span class="when">{{.When}}</span>
-        <span class="pair">{{.Pair}}</span>
-        <span class="msg">{{.Message}}</span>
-      </a>
-      {{else}}
+    {{range .Activity}}
       <div class="commit">
         <span class="when">{{.When}}</span>
-        <span class="pair">{{.Pair}}</span>
+        <span class="kind">{{.Kind}}</span>
+        {{if .PairURL}}
+        <a class="pair" href="{{.PairURL}}" target="_blank" rel="noopener">{{.Pair}}{{if .Server}} ({{.Server}}){{end}}</a>
+        {{else}}
+        <span class="pair">{{.Pair}}{{if .Server}} ({{.Server}}){{end}}</span>
+        {{end}}
+        {{if .URL}}
+        <a class="msg" href="{{.URL}}" target="_blank" rel="noopener">{{.Message}}</a>
+        {{else}}
         <span class="msg">{{.Message}}</span>
+        {{end}}
       </div>
-      {{end}}
     {{else}}
       <p class="empty">nothing mirrored yet</p>
     {{end}}

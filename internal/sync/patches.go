@@ -26,6 +26,8 @@ type PatchSyncer struct {
 	State         *state.Store
 	ForgejoWebURL string // https://host/owner/repo, for links in the UI
 	RadicleWebURL string // https://explorer/nodes/host/rid, for links in the UI
+	Series        string // dashboard row this pair's activity groups under
+	SeriesURL     string // where clicking that row's name goes
 }
 
 func (s *PatchSyncer) git(args ...string) (string, error) {
@@ -116,7 +118,11 @@ func (s *PatchSyncer) mirrorForgejoToRadicle(pr forgejo.PullRequest) error {
 	}); err != nil {
 		return err
 	}
-	s.State.LogActivity(s.RepoPair, "patch", state.ForgejoToRadicle, pr.Title, s.RadicleWebURL+"/patches/"+m[1])
+	s.State.LogActivity(state.Activity{
+		RepoPair: s.RepoPair, Series: s.Series, SeriesURL: s.SeriesURL,
+		Kind: "patch", Direction: state.ForgejoToRadicle, Summary: pr.Title,
+		URL: s.RadicleWebURL + "/patches/" + m[1],
+	})
 	return nil
 }
 
@@ -157,7 +163,11 @@ func (s *PatchSyncer) mirrorRadicleToForgejo(p radicle.Patch) error {
 	}); err != nil {
 		return err
 	}
-	s.State.LogActivity(s.RepoPair, "patch", state.RadicleToForgejo, p.Title, fmt.Sprintf("%s/pulls/%d", s.ForgejoWebURL, pr.Index))
+	s.State.LogActivity(state.Activity{
+		RepoPair: s.RepoPair, Series: s.Series, SeriesURL: s.SeriesURL,
+		Kind: "patch", Direction: state.RadicleToForgejo, Summary: p.Title,
+		URL: fmt.Sprintf("%s/pulls/%d", s.ForgejoWebURL, pr.Index),
+	})
 	return nil
 }
 
