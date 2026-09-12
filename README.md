@@ -2,7 +2,7 @@
 
 A daemon that mirrors repositories between Forgejo and Radicle: git content, issues, and pull requests / patches.
 
-It runs on a timer, keeps state in a local SQLite file, and never force-pushes — a real divergence between the two sides is reported and left for a human to resolve.
+It runs on a timer, keeps state in a local SQLite file, and never force-pushes. Real divergences between the two sides are reported and left for humans to resolve.
 
 ## What it syncs
 
@@ -12,7 +12,7 @@ It runs on a timer, keeps state in a local SQLite file, and never force-pushes �
 
 ## Why
 
-Forgejo and Radicle solve the same problem — hosting and reviewing changes to a git repository — with opposite architectures: one is a server you point a browser at, the other is a peer-to-peer protocol with no server at all. `graft` lets a project exist properly on both without anyone choosing sides or doing the mirroring by hand.
+Forgejo and Radicle solve the same problem — hosting and reviewing changes to a git repository — with opposite architectures: one is a server you point a browser at, the other is a peer-to-peer protocol with no server at all. `graft` lets a project exist on both.
 
 ## Requirements
 
