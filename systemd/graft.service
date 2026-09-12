@@ -1,0 +1,23 @@
+[Unit]
+Description=graft - Forgejo <-> Radicle sync daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=sync
+Group=sync
+ExecStart=/usr/local/bin/graft -config /etc/graft/config.yaml
+Restart=always
+RestartSec=10
+
+# Hardening: the daemon only needs its own state dir, its config dir (for
+# reading the token files) and the rad CLI's home directory.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/graft /home/sync/.radicle
+ReadOnlyPaths=/etc/graft
+
+[Install]
+WantedBy=multi-user.target

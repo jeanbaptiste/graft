@@ -1,0 +1,22 @@
+# Copy to /etc/graft/config.yaml and adjust.
+# This file itself holds no secrets: tokens live in separate files
+# (token_file), owned by the sync user, mode 600.
+
+sync_interval: 5m
+state_db: /var/lib/graft/state.db
+
+repos:
+  - name: testrepo
+    forgejo:
+      base_url: https://f1.cyberwild.org
+      owner: forgeadmin
+      repo: testrepo
+      token_file: /etc/graft/f1-testrepo.token
+    radicle:
+      rid: rad:z2YWuPL53okTkr5mgb7WCKsfxG7h8
+      http_base_url: https://r1.cyberwild.org
+      rad_home: /home/sync/.radicle
+    sync:
+      git: true
+      issues: true
+      patches: true
