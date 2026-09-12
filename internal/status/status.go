@@ -248,15 +248,11 @@ func hostLabel(rawURL string) string {
 	// A Radicle Explorer URL's host is always the shared frontend
 	// (e.g. radicle.cyberwild.org) — the actual node lives in the path,
 	// /nodes/<node-host>/<rid>/... — so different Radicle nodes get
-	// distinct labels instead of collapsing into one "radicle.cyberwild".
+	// distinct labels instead of collapsing into one shared one.
 	if segs := strings.Split(strings.TrimPrefix(u.Path, "/"), "/"); len(segs) >= 2 && segs[0] == "nodes" {
 		host = segs[1]
 	}
-	parts := strings.Split(host, ".")
-	if len(parts) > 1 {
-		parts = parts[:len(parts)-1]
-	}
-	return strings.Join(parts, ".")
+	return host
 }
 
 // buildSeriesRows groups entries by their Series (one row per monitored
