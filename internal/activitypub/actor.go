@@ -39,10 +39,13 @@ func ActorURI(host, series string) string {
 
 // BuildActor constructs the actor object for a series. repoURL links to
 // the underlying repo (its Forgejo or Radicle explorer page); publicKeyPEM
-// is that series' stored public key.
-func BuildActor(host, series, repoURL, publicKeyPEM string) Actor {
+// is that series' stored public key; radicleDID is that series' Radicle
+// node identity (did:key:..., empty to omit), shown as a verifiable
+// profile field so anyone following from the fediverse can confirm which
+// Radicle node actually signs this repo's history.
+func BuildActor(host, series, repoURL, publicKeyPEM, radicleDID string) Actor {
 	base := ActorURI(host, series)
-	return Actor{
+	a := Actor{
 		Context:           []string{"https://www.w3.org/ns/activitystreams", "https://w3id.org/security/v1"},
 		ID:                base,
 		Type:              "Service",
@@ -59,4 +62,10 @@ func BuildActor(host, series, repoURL, publicKeyPEM string) Actor {
 			PublicKeyPem: publicKeyPEM,
 		},
 	}
+	if radicleDID != "" {
+		a.Attachment = []Attachment{
+			{Type: "PropertyValue", Name: "Radicle DID", Value: radicleDID},
+		}
+	}
+	return a
 }

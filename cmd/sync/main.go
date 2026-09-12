@@ -48,6 +48,7 @@ func main() {
 
 	syncers := make([]*sync.RepoSyncer, 0, len(cfg.Repos))
 	syncersByPair := map[string]*sync.RepoSyncer{}
+	syncersBySeries := map[string]*sync.RepoSyncer{}
 	for _, pair := range cfg.Repos {
 		rs, err := sync.New(pair, st, sync.WorkDirFor(stateDir, pair.Name))
 		if err != nil {
@@ -56,6 +57,9 @@ func main() {
 		}
 		syncers = append(syncers, rs)
 		syncersByPair[pair.Name] = rs
+		if _, ok := syncersBySeries[rs.Series()]; !ok {
+			syncersBySeries[rs.Series()] = rs
+		}
 	}
 
 	topology := buildTopology(cfg)
@@ -83,6 +87,18 @@ func main() {
 					return fmt.Errorf("unknown repo pair %q", repoPair)
 				}
 				return rs.CommentOnItem(kind, forgejoID, radicleID, body)
+			},
+			func(series string) string {
+				rs, ok := syncersBySeries[series]
+				if !ok {
+					return ""
+				}
+				did, err := rs.RadicleDID()
+				if err != nil {
+					log.Error("resolve radicle did", "series", series, "err", err)
+					return ""
+				}
+				return did
 			},
 		)
 	}
