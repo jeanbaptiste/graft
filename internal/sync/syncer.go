@@ -152,6 +152,24 @@ func (rs *RepoSyncer) CommentOnItem(kind string, forgejoID int64, radicleID, bod
 	return errors.Join(errs...)
 }
 
+// RadicleDID returns the local Radicle node identity this pair pushes as,
+// resolved the same way GitSyncer resolves it for remote setup (`rad self
+// --nid`). Empty if this pair has no git sync configured, so nothing to
+// report.
+func (rs *RepoSyncer) RadicleDID() (string, error) {
+	if rs.git == nil {
+		return "", nil
+	}
+	nid, err := rs.git.localNodeID()
+	if err != nil {
+		return "", err
+	}
+	if nid == "" {
+		return "", nil
+	}
+	return "did:key:" + nid, nil
+}
+
 // Run executes every enabled scope once, logging and continuing past
 // per-scope errors so one broken scope doesn't block the others. It
 // returns each scope's error (nil if disabled or successful) for the

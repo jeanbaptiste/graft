@@ -28,13 +28,15 @@ type Handler struct {
 	store *state.Store
 	host  string
 	log   *slog.Logger
-	// repoURL, known, and postComment are supplied by the caller
-	// (cmd/sync/main.go), which already knows every series' topology and
-	// holds the actual sync.RepoSyncer instances — avoids this package
-	// needing to know about config.Config or sync.RepoSyncer at all.
+	// repoURL, known, postComment, and radicleDID are supplied by the
+	// caller (cmd/sync/main.go), which already knows every series'
+	// topology and holds the actual sync.RepoSyncer instances — avoids
+	// this package needing to know about config.Config or sync.RepoSyncer
+	// at all.
 	repoURL     func(series string) string
 	known       func(series string) bool
 	postComment func(repoPair, kind string, forgejoID int64, radicleID, body string) error
+	radicleDID  func(series string) string
 	client      *http.Client
 }
 
@@ -45,6 +47,7 @@ func NewHandler(
 	repoURL func(series string) string,
 	known func(series string) bool,
 	postComment func(repoPair, kind string, forgejoID int64, radicleID, body string) error,
+	radicleDID func(series string) string,
 ) *Handler {
 	return &Handler{
 		store:       store,
@@ -53,6 +56,7 @@ func NewHandler(
 		repoURL:     repoURL,
 		known:       known,
 		postComment: postComment,
+		radicleDID:  radicleDID,
 		client:      &http.Client{Timeout: 15 * time.Second},
 	}
 }
@@ -152,7 +156,7 @@ func (h *Handler) actor(w http.ResponseWriter, series string) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, activityContentType, BuildActor(h.host, series, h.repoURL(series), pub))
+	writeJSON(w, activityContentType, BuildActor(h.host, series, h.repoURL(series), pub, h.radicleDID(series)))
 }
 
 func (h *Handler) outbox(w http.ResponseWriter, series string) {
