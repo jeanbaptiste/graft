@@ -84,6 +84,21 @@ CREATE TABLE IF NOT EXISTS ap_actor (
 	public_key  TEXT NOT NULL,
 	created_at  TEXT NOT NULL
 );
+
+-- One row per remote actor following a series' ActivityPub actor.
+CREATE TABLE IF NOT EXISTS ap_follower (
+	series    TEXT NOT NULL,
+	actor_uri TEXT NOT NULL,
+	inbox_uri TEXT NOT NULL,
+	PRIMARY KEY (series, actor_uri)
+);
+
+-- How far delivery has gotten through activity_log for each series, so a
+-- restart doesn't redeliver everything to every follower.
+CREATE TABLE IF NOT EXISTS ap_delivery_cursor (
+	series            TEXT PRIMARY KEY,
+	last_delivered_id INTEGER NOT NULL DEFAULT 0
+);
 `)
 	if err != nil {
 		return err
@@ -316,4 +331,105 @@ INSERT OR IGNORE INTO ap_actor (series, private_key, public_key, created_at)
 VALUES (?, ?, ?, ?)
 `, series, k.PrivateKeyPEM, k.PublicKeyPEM, time.Now().UTC().Format(time.RFC3339))
 	return err
+}
+
+// Follower is one remote actor following a series' ActivityPub actor.
+type Follower struct {
+	ActorURI string
+	InboxURI string
+}
+
+// SaveFollower records (or updates the inbox URL of) a follower.
+func (s *Store) SaveFollower(series, actorURI, inboxURI string) error {
+	_, err := s.db.Exec(`
+INSERT INTO ap_follower (series, actor_uri, inbox_uri) VALUES (?, ?, ?)
+ON CONFLICT (series, actor_uri) DO UPDATE SET inbox_uri = excluded.inbox_uri
+`, series, actorURI, inboxURI)
+	return err
+}
+
+// RemoveFollower drops a follower, e.g. on Undo{Follow}.
+func (s *Store) RemoveFollower(series, actorURI string) error {
+	_, err := s.db.Exec(`DELETE FROM ap_follower WHERE series = ? AND actor_uri = ?`, series, actorURI)
+	return err
+}
+
+// Followers lists everyone following a series.
+func (s *Store) Followers(series string) ([]Follower, error) {
+	rows, err := s.db.Query(`SELECT actor_uri, inbox_uri FROM ap_follower WHERE series = ?`, series)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Follower
+	for rows.Next() {
+		var f Follower
+		if err := rows.Scan(&f.ActorURI, &f.InboxURI); err != nil {
+			return nil, err
+		}
+		out = append(out, f)
+	}
+	return out, rows.Err()
+}
+
+// FollowerCount is len(Followers(series)) without building the slice.
+func (s *Store) FollowerCount(series string) (int, error) {
+	row := s.db.QueryRow(`SELECT COUNT(*) FROM ap_follower WHERE series = ?`, series)
+	var n int
+	err := row.Scan(&n)
+	return n, err
+}
+
+// SeriesWithFollowers lists every series that has at least one follower —
+// the set worth checking for new activity to deliver.
+func (s *Store) SeriesWithFollowers() ([]string, error) {
+	rows, err := s.db.Query(`SELECT DISTINCT series FROM ap_follower`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var series string
+		if err := rows.Scan(&series); err != nil {
+			return nil, err
+		}
+		out = append(out, series)
+	}
+	return out, rows.Err()
+}
+
+// DeliveryCursor returns how far ActivityPub delivery has gotten through
+// activity_log for a series (0 if nothing has been delivered yet).
+func (s *Store) DeliveryCursor(series string) (int64, error) {
+	row := s.db.QueryRow(`SELECT last_delivered_id FROM ap_delivery_cursor WHERE series = ?`, series)
+	var id int64
+	err := row.Scan(&id)
+	if err == sql.ErrNoRows {
+		return 0, nil
+	}
+	return id, err
+}
+
+// SetDeliveryCursor records how far delivery has gotten for a series.
+func (s *Store) SetDeliveryCursor(series string, id int64) error {
+	_, err := s.db.Exec(`
+INSERT INTO ap_delivery_cursor (series, last_delivered_id) VALUES (?, ?)
+ON CONFLICT (series) DO UPDATE SET last_delivered_id = excluded.last_delivered_id
+`, series, id)
+	return err
+}
+
+// NewActivityForSeries returns activity_log entries for a series with
+// id > afterID, oldest first — the delivery order for ActivityPub.
+func (s *Store) NewActivityForSeries(series string, afterID int64) ([]ActivityEntry, error) {
+	rows, err := s.db.Query(`
+SELECT id, repo_pair, kind, direction, summary, url, series, series_url, occurred_at FROM activity_log
+WHERE series = ? AND id > ?
+ORDER BY id ASC
+`, series, afterID)
+	if err != nil {
+		return nil, err
+	}
+	return scanActivityRows(rows)
 }

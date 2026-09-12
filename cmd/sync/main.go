@@ -60,28 +60,36 @@ func main() {
 	tracker := status.NewTracker(st, cfg.SourceURL)
 	tracker.SetTopology(topology)
 	tracker.SetPublicHost(cfg.PublicHost)
+
+	var apHandler *activitypub.Handler
+	if cfg.PublicHost != "" {
+		apHandler = activitypub.NewHandler(st, cfg.PublicHost, log,
+			func(series string) string {
+				if refs := topology[series]; len(refs) > 0 {
+					return refs[0].URL
+				}
+				return ""
+			},
+			func(series string) bool {
+				_, ok := topology[series]
+				return ok
+			},
+		)
+	}
+
 	runAll := func() {
 		for _, rs := range syncers {
 			gitErr, issuesErr, patchErr := rs.Run(log)
 			tracker.Record(rs.Name(), rs.Series(), gitErr, issuesErr, patchErr)
 		}
+		if apHandler != nil {
+			apHandler.DeliverNewActivity()
+		}
 	}
 
 	if *listen != "" {
 		mux := http.NewServeMux()
-		if cfg.PublicHost != "" {
-			apHandler := activitypub.NewHandler(st, cfg.PublicHost,
-				func(series string) string {
-					if refs := topology[series]; len(refs) > 0 {
-						return refs[0].URL
-					}
-					return ""
-				},
-				func(series string) bool {
-					_, ok := topology[series]
-					return ok
-				},
-			)
+		if apHandler != nil {
 			apHandler.Register(mux)
 		}
 		mux.Handle("/", tracker.Handler())

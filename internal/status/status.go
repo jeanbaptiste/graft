@@ -187,11 +187,12 @@ type socialData struct {
 }
 
 type socialRow struct {
-	Name         string
-	Handle       string // "series@host"
-	WebfingerURL string
-	ActorURL     string
-	OutboxURL    string
+	Name          string
+	Handle        string // "series@host"
+	WebfingerURL  string
+	ActorURL      string
+	OutboxURL     string
+	FollowerCount int
 }
 
 func (t *Tracker) serveSocial(w http.ResponseWriter, r *http.Request) {
@@ -214,12 +215,17 @@ func (t *Tracker) serveSocial(w http.ResponseWriter, r *http.Request) {
 	rows := make([]socialRow, 0, len(names))
 	for _, name := range names {
 		actorURL := "https://" + publicHost + "/actors/" + name
+		followerCount, err := t.store.FollowerCount(name)
+		if err != nil {
+			followerCount = 0
+		}
 		rows = append(rows, socialRow{
-			Name:         name,
-			Handle:       name + "@" + publicHost,
-			WebfingerURL: "https://" + publicHost + "/.well-known/webfinger?resource=acct:" + name + "@" + publicHost,
-			ActorURL:     actorURL,
-			OutboxURL:    actorURL + "/outbox",
+			Name:          name,
+			Handle:        name + "@" + publicHost,
+			WebfingerURL:  "https://" + publicHost + "/.well-known/webfinger?resource=acct:" + name + "@" + publicHost,
+			ActorURL:      actorURL,
+			OutboxURL:     actorURL + "/outbox",
+			FollowerCount: followerCount,
 		})
 	}
 
@@ -826,7 +832,7 @@ var socialTmpl = template.Must(template.New("social").Parse(`<!doctype html>
   {{range .Series}}
     <div class="series-block">
       <div class="handle">@{{.Handle}}</div>
-      <h2>ActivityPub</h2>
+      <h2>ActivityPub &middot; {{.FollowerCount}} follower{{if ne .FollowerCount 1}}s{{end}}</h2>
       <div class="endpoints">
         <a href="{{.WebfingerURL}}" target="_blank" rel="noopener">WebFinger</a>
         <a href="{{.ActorURL}}" target="_blank" rel="noopener">Actor</a>

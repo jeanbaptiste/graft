@@ -1,10 +1,14 @@
 package activitypub
 
 import (
+	"crypto/rsa"
 	"encoding/json"
+	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"graft/internal/state"
 )
@@ -12,23 +16,34 @@ import (
 const (
 	activityContentType = "application/activity+json"
 	outboxLimit         = 50
+	maxInboxBody        = 1 << 20 // 1 MiB, generous for a Follow/Undo/reply
 )
 
 // Handler serves the ActivityPub surface for every series: WebFinger,
-// actor, outbox, individual notes, and (for now, always empty — see M2 in
-// the v2 plan) a followers collection.
+// actor, outbox, individual notes, followers, and an inbox that accepts
+// Follow/Undo{Follow} (replies land here too but are ignored until the
+// comment bridge, M3).
 type Handler struct {
 	store *state.Store
 	host  string
+	log   *slog.Logger
 	// repoURL and known are supplied by the caller (cmd/sync/main.go),
 	// which already knows every series' topology — avoids this package
 	// needing to know about config.Config or sync.RepoSyncer at all.
 	repoURL func(series string) string
 	known   func(series string) bool
+	client  *http.Client
 }
 
-func NewHandler(store *state.Store, host string, repoURL func(series string) string, known func(series string) bool) *Handler {
-	return &Handler{store: store, host: host, repoURL: repoURL, known: known}
+func NewHandler(store *state.Store, host string, log *slog.Logger, repoURL func(series string) string, known func(series string) bool) *Handler {
+	return &Handler{
+		store:   store,
+		host:    host,
+		log:     log,
+		repoURL: repoURL,
+		known:   known,
+		client:  &http.Client{Timeout: 15 * time.Second},
+	}
 }
 
 // Register mounts every ActivityPub route on mux. Call before mounting any
@@ -84,6 +99,8 @@ func (h *Handler) actorRouter(w http.ResponseWriter, r *http.Request) {
 		h.outbox(w, series)
 	case len(parts) == 2 && parts[1] == "followers":
 		h.followers(w, series)
+	case len(parts) == 2 && parts[1] == "inbox":
+		h.inbox(w, r, series)
 	case len(parts) == 3 && parts[1] == "notes":
 		h.note(w, r, series, parts[2])
 	default:
@@ -155,13 +172,188 @@ func (h *Handler) note(w http.ResponseWriter, r *http.Request, series, idStr str
 }
 
 func (h *Handler) followers(w http.ResponseWriter, series string) {
+	n, err := h.store.FollowerCount(series)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	writeJSON(w, activityContentType, OrderedCollection{
 		Context:      "https://www.w3.org/ns/activitystreams",
 		ID:           ActorURI(h.host, series) + "/followers",
 		Type:         "OrderedCollection",
-		TotalItems:   0,
+		TotalItems:   n,
 		OrderedItems: []Create{},
 	})
+}
+
+// actorPrivateKey returns a series' actor's private key, generating a
+// keypair first if one doesn't exist yet.
+func (h *Handler) actorPrivateKey(series string) (*rsa.PrivateKey, error) {
+	privPEM, _, err := h.actorKeys(series)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePrivateKey(privPEM)
+}
+
+// inboxActivity is the subset of an inbound activity's fields this handler
+// reads. Object is kept raw so, for a Follow, it can be embedded verbatim
+// as the Accept's object — and so an Undo's nested Follow can be decoded
+// separately.
+type inboxActivity struct {
+	Type   string          `json:"type"`
+	Actor  string          `json:"actor"`
+	ID     string          `json:"id"`
+	Object json.RawMessage `json:"object"`
+}
+
+func (h *Handler) inbox(w http.ResponseWriter, r *http.Request, series string) {
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxInboxBody))
+	if err != nil {
+		http.Error(w, "read body", http.StatusBadRequest)
+		return
+	}
+
+	var act inboxActivity
+	if err := json.Unmarshal(body, &act); err != nil || act.Actor == "" {
+		http.Error(w, "invalid activity", http.StatusBadRequest)
+		return
+	}
+
+	remoteActor, err := FetchActor(h.client, act.Actor)
+	if err != nil {
+		h.log.Error("ap inbox: resolve actor", "series", series, "actor", act.Actor, "err", err)
+		http.Error(w, "could not resolve actor", http.StatusBadGateway)
+		return
+	}
+	pub, err := ParsePublicKey(remoteActor.PublicKey.PublicKeyPem)
+	if err != nil {
+		http.Error(w, "invalid actor public key", http.StatusBadGateway)
+		return
+	}
+	if err := VerifyRequest(r, body, pub); err != nil {
+		h.log.Error("ap inbox: signature verification failed", "series", series, "actor", act.Actor, "err", err)
+		http.Error(w, "signature verification failed", http.StatusUnauthorized)
+		return
+	}
+
+	switch act.Type {
+	case "Follow":
+		if err := h.store.SaveFollower(series, act.Actor, remoteActor.Inbox); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if err := h.sendAccept(series, remoteActor.Inbox, body); err != nil {
+			// The follow is already recorded; a failed Accept delivery
+			// shouldn't undo that — the remote side will likely retry.
+			h.log.Error("ap inbox: send accept", "series", series, "actor", act.Actor, "err", err)
+		}
+	case "Undo":
+		var inner inboxActivity
+		if err := json.Unmarshal(act.Object, &inner); err == nil && inner.Type == "Follow" {
+			if err := h.store.RemoveFollower(series, act.Actor); err != nil {
+				h.log.Error("ap inbox: remove follower", "series", series, "actor", act.Actor, "err", err)
+			}
+		}
+	default:
+		// Replies (Create{Note}) land here too but aren't handled until
+		// the comment bridge (v2 M3) — accepted and ignored for now.
+	}
+
+	w.WriteHeader(http.StatusAccepted)
+}
+
+// sendAccept replies to a Follow with a signed Accept, embedding the
+// original Follow activity verbatim as required by the spec.
+func (h *Handler) sendAccept(series, targetInbox string, followBody []byte) error {
+	priv, err := h.actorPrivateKey(series)
+	if err != nil {
+		return err
+	}
+	actor := ActorURI(h.host, series)
+	accept := map[string]any{
+		"@context": "https://www.w3.org/ns/activitystreams",
+		"id":       actor + "/accepts/" + strconv.FormatInt(time.Now().UnixNano(), 10),
+		"type":     "Accept",
+		"actor":    actor,
+		"object":   json.RawMessage(followBody),
+	}
+	body, err := json.Marshal(accept)
+	if err != nil {
+		return err
+	}
+	return PostSigned(h.client, targetInbox, actor+"#main-key", priv, body)
+}
+
+// DeliverNewActivity signs and POSTs a Create{Note} to every follower's
+// inbox for each series' activity_log rows logged since the last
+// delivery. Call it once per sync pass, after runAll has logged whatever
+// happened this pass. Best-effort: a delivery failure to one follower is
+// logged and skipped, never blocks the sync loop or other followers.
+func (h *Handler) DeliverNewActivity() {
+	seriesList, err := h.store.SeriesWithFollowers()
+	if err != nil {
+		h.log.Error("ap delivery: list series with followers", "err", err)
+		return
+	}
+
+	for _, series := range seriesList {
+		cursor, err := h.store.DeliveryCursor(series)
+		if err != nil {
+			h.log.Error("ap delivery: read cursor", "series", series, "err", err)
+			continue
+		}
+		entries, err := h.store.NewActivityForSeries(series, cursor)
+		if err != nil {
+			h.log.Error("ap delivery: list new activity", "series", series, "err", err)
+			continue
+		}
+		if len(entries) == 0 {
+			continue
+		}
+
+		followers, err := h.store.Followers(series)
+		if err != nil {
+			h.log.Error("ap delivery: list followers", "series", series, "err", err)
+			continue
+		}
+		priv, err := h.actorPrivateKey(series)
+		if err != nil {
+			h.log.Error("ap delivery: load actor key", "series", series, "err", err)
+			continue
+		}
+		keyID := ActorURI(h.host, series) + "#main-key"
+
+		maxID := cursor
+		for _, e := range entries {
+			note := BuildNote(h.host, series, e)
+			create := Create{
+				Context:   "https://www.w3.org/ns/activitystreams",
+				ID:        note.ID + "/activity",
+				Type:      "Create",
+				Actor:     ActorURI(h.host, series),
+				Published: note.Published,
+				To:        []string{publicAudience},
+				Object:    note,
+			}
+			body, err := json.Marshal(create)
+			if err != nil {
+				h.log.Error("ap delivery: marshal activity", "series", series, "id", e.ID, "err", err)
+				continue
+			}
+			for _, f := range followers {
+				if err := PostSigned(h.client, f.InboxURI, keyID, priv, body); err != nil {
+					h.log.Error("ap delivery: post to follower", "series", series, "follower", f.ActorURI, "err", err)
+				}
+			}
+			if e.ID > maxID {
+				maxID = e.ID
+			}
+		}
+		if err := h.store.SetDeliveryCursor(series, maxID); err != nil {
+			h.log.Error("ap delivery: set cursor", "series", series, "err", err)
+		}
+	}
 }
 
 func writeJSON(w http.ResponseWriter, contentType string, v any) {
