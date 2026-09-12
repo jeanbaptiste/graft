@@ -63,10 +63,21 @@ func main() {
 	}
 
 	topology := buildTopology(cfg)
+	blueskyConfigured := map[string]bool{}
+	for _, pair := range cfg.Repos {
+		if pair.Bluesky != nil {
+			series := pair.Series
+			if series == "" {
+				series = pair.Name
+			}
+			blueskyConfigured[series] = true
+		}
+	}
 
 	tracker := status.NewTracker(st, cfg.SourceURL)
 	tracker.SetTopology(topology)
 	tracker.SetPublicHost(cfg.PublicHost)
+	tracker.SetBlueskyConfigured(blueskyConfigured)
 
 	var apHandler *activitypub.Handler
 	if cfg.PublicHost != "" {

@@ -54,6 +54,19 @@ func New(pair config.RepoPair, st *state.Store, workDir string) (*RepoSyncer, er
 		seriesURL = forgejoWebURL
 	}
 
+	var bluesky *BlueskyPoster
+	if pair.Bluesky != nil {
+		appPassword, err := config.ReadToken(pair.Bluesky.AppPasswordFile)
+		if err != nil {
+			return nil, fmt.Errorf("read bluesky app password: %w", err)
+		}
+		bluesky = &BlueskyPoster{
+			Handle:      pair.Bluesky.Handle,
+			AppPassword: appPassword,
+			PDSHost:     pair.Bluesky.PDSHost,
+		}
+	}
+
 	if pair.Sync.Git || pair.Sync.Patches {
 		rs.git = &GitSyncer{
 			RepoPair:      pair.Name,
@@ -67,6 +80,7 @@ func New(pair config.RepoPair, st *state.Store, workDir string) (*RepoSyncer, er
 			State:         st,
 			Series:        series,
 			SeriesURL:     seriesURL,
+			Bluesky:       bluesky,
 		}
 	}
 	if pair.Sync.Issues {
@@ -89,6 +103,7 @@ func New(pair config.RepoPair, st *state.Store, workDir string) (*RepoSyncer, er
 			RadicleWebURL: radicleWebURL,
 			Series:        series,
 			SeriesURL:     seriesURL,
+			Bluesky:       bluesky,
 		}
 	}
 	return rs, nil
