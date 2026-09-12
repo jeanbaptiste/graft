@@ -25,7 +25,8 @@ import (
 type GitSyncer struct {
 	RepoPair      string // key used in the state store
 	WorkDir       string // local clone, created on first run if absent
-	ForgejoURL    string // authenticated clone URL (token embedded)
+	ForgejoURL    string // authenticated clone URL (token embedded), for git
+	ForgejoWebURL string // https://host/owner/repo, for links in the UI
 	ForgejoBranch string
 	RID           string
 	RadHome       string
@@ -212,7 +213,10 @@ func (g *GitSyncer) logMirroredCommits(oldHead, direction string) {
 	if oldHead != "" {
 		rangeSpec = oldHead + "..FETCH_HEAD"
 	}
-	out, err := g.run("log", "--pretty=format:%h %s", rangeSpec)
+	// %x1f (unit separator) between fields: commit subjects can contain
+	// anything else printable, so a space or comma delimiter would be
+	// ambiguous to split back apart.
+	out, err := g.run("log", "--pretty=format:%H%x1f%h %s", rangeSpec)
 	if err != nil || out == "" {
 		return
 	}
@@ -220,6 +224,14 @@ func (g *GitSyncer) logMirroredCommits(oldHead, direction string) {
 		if line == "" {
 			continue
 		}
-		g.State.LogActivity(g.RepoPair, "git", direction, line)
+		full, summary, ok := strings.Cut(line, "\x1f")
+		if !ok {
+			continue
+		}
+		url := ""
+		if g.ForgejoWebURL != "" {
+			url = g.ForgejoWebURL + "/commit/" + full
+		}
+		g.State.LogActivity(g.RepoPair, "git", direction, summary, url)
 	}
 }

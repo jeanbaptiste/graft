@@ -17,10 +17,12 @@ const mirrorNotice = "\n\n---\n_Mirrored automatically, do not edit here — edi
 // IssueSyncer mirrors issues between one Forgejo repository and one Radicle
 // repository, create-only (see package doc for what that means).
 type IssueSyncer struct {
-	RepoPair string
-	Forgejo  *forgejo.Client
-	Radicle  *radicle.Client
-	State    *state.Store
+	RepoPair      string
+	Forgejo       *forgejo.Client
+	Radicle       *radicle.Client
+	State         *state.Store
+	ForgejoWebURL string // https://host/owner/repo, for links in the UI
+	RadicleWebURL string // https://explorer/nodes/host/rid, for links in the UI
 }
 
 func (s *IssueSyncer) Sync() error {
@@ -68,7 +70,7 @@ func (s *IssueSyncer) mirrorForgejoToRadicle(fi forgejo.Issue) error {
 	}); err != nil {
 		return err
 	}
-	s.State.LogActivity(s.RepoPair, "issue", state.ForgejoToRadicle, fi.Title)
+	s.State.LogActivity(s.RepoPair, "issue", state.ForgejoToRadicle, fi.Title, s.RadicleWebURL+"/issues/"+radicleID)
 	return nil
 }
 
@@ -94,7 +96,7 @@ func (s *IssueSyncer) mirrorRadicleToForgejo(ri radicle.Issue) error {
 	}); err != nil {
 		return err
 	}
-	s.State.LogActivity(s.RepoPair, "issue", state.RadicleToForgejo, ri.Title)
+	s.State.LogActivity(s.RepoPair, "issue", state.RadicleToForgejo, ri.Title, fmt.Sprintf("%s/issues/%d", s.ForgejoWebURL, fi.Index))
 	return nil
 }
 

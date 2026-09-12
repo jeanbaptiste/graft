@@ -52,7 +52,7 @@ func main() {
 		syncers = append(syncers, rs)
 	}
 
-	tracker := status.NewTracker(st)
+	tracker := status.NewTracker(st, cfg.SourceURL)
 	runAll := func() {
 		for _, rs := range syncers {
 			gitErr, issuesErr, patchErr := rs.Run(log)

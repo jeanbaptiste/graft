@@ -6,6 +6,7 @@ package state
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -66,13 +67,23 @@ CREATE TABLE IF NOT EXISTS activity_log (
 	kind        TEXT NOT NULL, -- 'git', 'issue', 'patch'
 	direction   TEXT NOT NULL, -- 'forgejo_to_radicle' or 'radicle_to_forgejo'
 	summary     TEXT NOT NULL,
+	url         TEXT NOT NULL DEFAULT '',
 	occurred_at TEXT NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_activity_log_occurred_at
 	ON activity_log (occurred_at);
 `)
-	return err
+	if err != nil {
+		return err
+	}
+	// url was added after the table already shipped once; ALTER is a no-op
+	// (ignored) on a fresh db where the CREATE above already included it.
+	_, err = db.Exec(`ALTER TABLE activity_log ADD COLUMN url TEXT NOT NULL DEFAULT ''`)
+	if err != nil && !strings.Contains(err.Error(), "duplicate column") {
+		return err
+	}
+	return nil
 }
 
 // GitCursor returns the last-synced commit SHAs on each side for a repo pair.
@@ -152,12 +163,14 @@ const (
 )
 
 // LogActivity records one thing that was actually mirrored, for the status
-// page. Call it once per commit/issue/patch, not once per sync pass.
-func (s *Store) LogActivity(repoPair, kind, direction, summary string) error {
+// page. Call it once per commit/issue/patch, not once per sync pass. url is
+// where to send someone who clicks this entry — the forge or Radicle page
+// for the thing that now exists because of this sync; "" if none is known.
+func (s *Store) LogActivity(repoPair, kind, direction, summary, url string) error {
 	_, err := s.db.Exec(`
-INSERT INTO activity_log (repo_pair, kind, direction, summary, occurred_at)
-VALUES (?, ?, ?, ?, ?)
-`, repoPair, kind, direction, summary, time.Now().UTC().Format(time.RFC3339))
+INSERT INTO activity_log (repo_pair, kind, direction, summary, url, occurred_at)
+VALUES (?, ?, ?, ?, ?, ?)
+`, repoPair, kind, direction, summary, url, time.Now().UTC().Format(time.RFC3339))
 	return err
 }
 
@@ -167,13 +180,14 @@ type ActivityEntry struct {
 	Kind       string
 	Direction  string
 	Summary    string
+	URL        string
 	OccurredAt time.Time
 }
 
 // ActivitySince returns every activity entry at or after since, newest first.
 func (s *Store) ActivitySince(since time.Time) ([]ActivityEntry, error) {
 	rows, err := s.db.Query(`
-SELECT repo_pair, kind, direction, summary, occurred_at FROM activity_log
+SELECT repo_pair, kind, direction, summary, url, occurred_at FROM activity_log
 WHERE occurred_at >= ?
 ORDER BY occurred_at DESC
 `, since.UTC().Format(time.RFC3339))
@@ -186,7 +200,7 @@ ORDER BY occurred_at DESC
 	for rows.Next() {
 		var e ActivityEntry
 		var occurredAt string
-		if err := rows.Scan(&e.RepoPair, &e.Kind, &e.Direction, &e.Summary, &occurredAt); err != nil {
+		if err := rows.Scan(&e.RepoPair, &e.Kind, &e.Direction, &e.Summary, &e.URL, &occurredAt); err != nil {
 			return nil, err
 		}
 		e.OccurredAt, err = time.Parse(time.RFC3339, occurredAt)

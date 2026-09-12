@@ -5,6 +5,9 @@
 sync_interval: 5m
 state_db: /var/lib/graft/state.db
 
+# Shown in the status dashboard's footer. Optional.
+source_url: https://git.example.org/alice/graft
+
 repos:
   - name: testrepo
     forgejo:
@@ -16,6 +19,9 @@ repos:
       rid: rad:z2YWuPL53okTkr5mgb7WCKsfxG7h8
       http_base_url: https://r1.cyberwild.org
       rad_home: /home/sync/.radicle
+      # A Radicle Explorer deployment, for "view this on Radicle" links in
+      # the status dashboard. Optional: links are omitted if unset.
+      explorer_url: https://app.radicle.xyz
     sync:
       git: true
       issues: true
