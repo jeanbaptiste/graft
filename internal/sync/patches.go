@@ -121,7 +121,8 @@ func (s *PatchSyncer) mirrorForgejoToRadicle(pr forgejo.PullRequest) error {
 	s.State.LogActivity(state.Activity{
 		RepoPair: s.RepoPair, Series: s.Series, SeriesURL: s.SeriesURL,
 		Kind: "patch", Direction: state.ForgejoToRadicle, Summary: pr.Title,
-		URL: s.RadicleWebURL + "/patches/" + m[1],
+		URL:       s.RadicleWebURL + "/patches/" + m[1],
+		ForgejoID: pr.Index, RadicleID: m[1],
 	})
 	return nil
 }
@@ -166,7 +167,8 @@ func (s *PatchSyncer) mirrorRadicleToForgejo(p radicle.Patch) error {
 	s.State.LogActivity(state.Activity{
 		RepoPair: s.RepoPair, Series: s.Series, SeriesURL: s.SeriesURL,
 		Kind: "patch", Direction: state.RadicleToForgejo, Summary: p.Title,
-		URL: fmt.Sprintf("%s/pulls/%d", s.ForgejoWebURL, pr.Index),
+		URL:       fmt.Sprintf("%s/pulls/%d", s.ForgejoWebURL, pr.Index),
+		ForgejoID: pr.Index, RadicleID: p.ID,
 	})
 	return nil
 }

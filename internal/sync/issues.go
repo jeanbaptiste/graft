@@ -75,7 +75,8 @@ func (s *IssueSyncer) mirrorForgejoToRadicle(fi forgejo.Issue) error {
 	s.State.LogActivity(state.Activity{
 		RepoPair: s.RepoPair, Series: s.Series, SeriesURL: s.SeriesURL,
 		Kind: "issue", Direction: state.ForgejoToRadicle, Summary: fi.Title,
-		URL: s.RadicleWebURL + "/issues/" + radicleID,
+		URL:       s.RadicleWebURL + "/issues/" + radicleID,
+		ForgejoID: fi.Index, RadicleID: radicleID,
 	})
 	return nil
 }
@@ -105,7 +106,8 @@ func (s *IssueSyncer) mirrorRadicleToForgejo(ri radicle.Issue) error {
 	s.State.LogActivity(state.Activity{
 		RepoPair: s.RepoPair, Series: s.Series, SeriesURL: s.SeriesURL,
 		Kind: "issue", Direction: state.RadicleToForgejo, Summary: ri.Title,
-		URL: fmt.Sprintf("%s/issues/%d", s.ForgejoWebURL, fi.Index),
+		URL:       fmt.Sprintf("%s/issues/%d", s.ForgejoWebURL, fi.Index),
+		ForgejoID: fi.Index, RadicleID: ri.ID,
 	})
 	return nil
 }

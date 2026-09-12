@@ -144,3 +144,12 @@ func (c *Client) CreatePullRequest(title, body, head, base string) (*PullRequest
 	}
 	return &pr, nil
 }
+
+// CreateIssueComment adds a comment to an issue or pull request — Forgejo
+// (like Gitea) treats PR comments as issue comments under the same
+// endpoint, verified against a live PR on f1.
+func (c *Client) CreateIssueComment(index int64, body string) error {
+	path := fmt.Sprintf("/repos/%s/%s/issues/%d/comments", c.owner, c.repo, index)
+	req := map[string]string{"body": body}
+	return c.do(http.MethodPost, path, req, nil)
+}
