@@ -244,7 +244,15 @@ func hostLabel(rawURL string) string {
 	if err != nil || u.Host == "" {
 		return ""
 	}
-	parts := strings.Split(u.Host, ".")
+	host := u.Host
+	// A Radicle Explorer URL's host is always the shared frontend
+	// (e.g. radicle.cyberwild.org) — the actual node lives in the path,
+	// /nodes/<node-host>/<rid>/... — so different Radicle nodes get
+	// distinct labels instead of collapsing into one "radicle.cyberwild".
+	if segs := strings.Split(strings.TrimPrefix(u.Path, "/"), "/"); len(segs) >= 2 && segs[0] == "nodes" {
+		host = segs[1]
+	}
+	parts := strings.Split(host, ".")
 	if len(parts) > 1 {
 		parts = parts[:len(parts)-1]
 	}
@@ -396,7 +404,10 @@ func recentActivity(entries []state.ActivityEntry) []commitLine {
 // ".../owner/repo/commit/<sha>" -> ".../owner/repo". Empty if rawURL is
 // empty or doesn't contain a recognized item path.
 func repoRootURL(rawURL string) string {
-	for _, marker := range []string{"/commit/", "/issues/", "/pulls/", "/patches/"} {
+	// Forgejo uses singular "/commit/"; Radicle Explorer uses plural
+	// "/commits/" — both must be recognized, or every Radicle-hosted
+	// commit link falls back to a non-clickable label.
+	for _, marker := range []string{"/commit/", "/commits/", "/issues/", "/pulls/", "/patches/"} {
 		if idx := strings.Index(rawURL, marker); idx >= 0 {
 			return rawURL[:idx]
 		}
