@@ -1,1 +1,0 @@
-Propagation test for graft-source mesh.
