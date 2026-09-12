@@ -34,6 +34,23 @@ type RepoPair struct {
 	// repository (one per forge/Radicle side) under one row in the status
 	// dashboard. Defaults to Name — i.e. its own row — if unset.
 	Series string `yaml:"series"`
+	// Bluesky, if set, posts a short note to this account whenever this
+	// pair mirrors a new commit or opens a patch/PR. Optional: nil means
+	// this pair never posts to Bluesky.
+	Bluesky *BlueskyTarget `yaml:"bluesky"`
+}
+
+// BlueskyTarget identifies the Bluesky account to post mirror activity to.
+// AppPasswordFile follows the same convention as ForgejoTarget.TokenFile —
+// an app password (never the account's real password), read from a
+// separate chmod-600 file so the config itself holds no secrets.
+type BlueskyTarget struct {
+	Handle          string `yaml:"handle"`
+	AppPasswordFile string `yaml:"app_password_file"`
+	// PDSHost is the XRPC endpoint to talk to. Optional: defaults to
+	// https://bsky.social, correct for any account hosted there (the
+	// common case).
+	PDSHost string `yaml:"pds_host"`
 }
 
 // ForgejoTarget identifies a repository on a Forgejo instance and where to
@@ -120,6 +137,11 @@ func (r RepoPair) validate() error {
 	}
 	if !r.Sync.Git && !r.Sync.Issues && !r.Sync.Patches {
 		return fmt.Errorf("at least one of sync.git, sync.issues, sync.patches must be true")
+	}
+	if r.Bluesky != nil {
+		if r.Bluesky.Handle == "" || r.Bluesky.AppPasswordFile == "" {
+			return fmt.Errorf("bluesky.handle and app_password_file are required when bluesky is set")
+		}
 	}
 	return nil
 }

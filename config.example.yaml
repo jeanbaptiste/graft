@@ -36,3 +36,11 @@ repos:
       git: true
       issues: true
       patches: true
+    # Posts a short note to this Bluesky account whenever this pair mirrors
+    # a new commit or opens a patch/PR. Optional — omit to never post.
+    bluesky:
+      handle: testrepo.bsky.social
+      app_password_file: /etc/graft/testrepo-bluesky.app-password
+      # PDS endpoint. Optional: defaults to https://bsky.social, correct
+      # for any account hosted there (the common case).
+      pds_host: https://bsky.social

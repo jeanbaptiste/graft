@@ -24,10 +24,11 @@ type PatchSyncer struct {
 	Forgejo       *forgejo.Client
 	Radicle       *radicle.Client
 	State         *state.Store
-	ForgejoWebURL string // https://host/owner/repo, for links in the UI
-	RadicleWebURL string // https://explorer/nodes/host/rid, for links in the UI
-	Series        string // dashboard row this pair's activity groups under
-	SeriesURL     string // where clicking that row's name goes
+	ForgejoWebURL string         // https://host/owner/repo, for links in the UI
+	RadicleWebURL string         // https://explorer/nodes/host/rid, for links in the UI
+	Series        string         // dashboard row this pair's activity groups under
+	SeriesURL     string         // where clicking that row's name goes
+	Bluesky       *BlueskyPoster // nil unless this pair has bluesky configured
 }
 
 func (s *PatchSyncer) git(args ...string) (string, error) {
@@ -124,6 +125,7 @@ func (s *PatchSyncer) mirrorForgejoToRadicle(pr forgejo.PullRequest) error {
 		URL:       s.RadicleWebURL + "/patches/" + m[1],
 		ForgejoID: pr.Index, RadicleID: m[1],
 	})
+	s.Bluesky.Post(s.Series + ": patch opened — " + pr.Title + "\n" + s.RadicleWebURL + "/patches/" + m[1])
 	return nil
 }
 
@@ -170,6 +172,7 @@ func (s *PatchSyncer) mirrorRadicleToForgejo(p radicle.Patch) error {
 		URL:       fmt.Sprintf("%s/pulls/%d", s.ForgejoWebURL, pr.Index),
 		ForgejoID: pr.Index, RadicleID: p.ID,
 	})
+	s.Bluesky.Post(fmt.Sprintf("%s: patch opened — %s\n%s/pulls/%d", s.Series, p.Title, s.ForgejoWebURL, pr.Index))
 	return nil
 }
 

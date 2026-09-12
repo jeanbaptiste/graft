@@ -32,8 +32,9 @@ type GitSyncer struct {
 	RID           string
 	RadHome       string
 	State         *state.Store
-	Series        string // dashboard row this pair's activity groups under
-	SeriesURL     string // where clicking that row's name goes
+	Series        string         // dashboard row this pair's activity groups under
+	SeriesURL     string         // where clicking that row's name goes
+	Bluesky       *BlueskyPoster // nil unless this pair has bluesky configured
 }
 
 func (g *GitSyncer) run(args ...string) (string, error) {
@@ -249,5 +250,13 @@ func (g *GitSyncer) logMirroredCommits(oldHead, direction, to string) {
 			RepoPair: g.RepoPair, Series: g.Series, SeriesURL: g.SeriesURL,
 			Kind: "git", Direction: direction, Summary: summary, URL: url,
 		})
+		// Best-effort, same as LogActivity above: a Bluesky hiccup never
+		// fails the sync, and nil Bluesky (the common case, no account
+		// configured) is a silent no-op.
+		text := g.Series + ": " + summary
+		if url != "" {
+			text += "\n" + url
+		}
+		g.Bluesky.Post(text)
 	}
 }
