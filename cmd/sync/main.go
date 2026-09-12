@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"graft/internal/activitypub"
 	"graft/internal/config"
 	"graft/internal/state"
 	"graft/internal/status"
@@ -54,8 +55,11 @@ func main() {
 		syncers = append(syncers, rs)
 	}
 
+	topology := buildTopology(cfg)
+
 	tracker := status.NewTracker(st, cfg.SourceURL)
-	tracker.SetTopology(buildTopology(cfg))
+	tracker.SetTopology(topology)
+	tracker.SetPublicHost(cfg.PublicHost)
 	runAll := func() {
 		for _, rs := range syncers {
 			gitErr, issuesErr, patchErr := rs.Run(log)
@@ -64,8 +68,26 @@ func main() {
 	}
 
 	if *listen != "" {
+		mux := http.NewServeMux()
+		if cfg.PublicHost != "" {
+			apHandler := activitypub.NewHandler(st, cfg.PublicHost,
+				func(series string) string {
+					if refs := topology[series]; len(refs) > 0 {
+						return refs[0].URL
+					}
+					return ""
+				},
+				func(series string) bool {
+					_, ok := topology[series]
+					return ok
+				},
+			)
+			apHandler.Register(mux)
+		}
+		mux.Handle("/", tracker.Handler())
+
 		go func() {
-			if err := http.ListenAndServe(*listen, tracker.Handler()); err != nil {
+			if err := http.ListenAndServe(*listen, mux); err != nil {
 				log.Error("status server stopped", "err", err)
 			}
 		}()

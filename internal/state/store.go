@@ -75,6 +75,15 @@ CREATE TABLE IF NOT EXISTS activity_log (
 
 CREATE INDEX IF NOT EXISTS idx_activity_log_occurred_at
 	ON activity_log (occurred_at);
+
+-- One row per series' ActivityPub actor: its RSA keypair, generated once
+-- lazily the first time that series is served over ActivityPub.
+CREATE TABLE IF NOT EXISTS ap_actor (
+	series      TEXT PRIMARY KEY,
+	private_key TEXT NOT NULL,
+	public_key  TEXT NOT NULL,
+	created_at  TEXT NOT NULL
+);
 `)
 	if err != nil {
 		return err
@@ -165,8 +174,8 @@ DO UPDATE SET content_hash = excluded.content_hash, synced_at = excluded.synced_
 
 // Activity is one thing that was actually mirrored, for the status page.
 type Activity struct {
-	RepoPair  string // the sync pair that did it, e.g. "graft-test-v2-f1"
-	Series    string // the human-facing repo group this pair belongs to,
+	RepoPair string // the sync pair that did it, e.g. "graft-test-v2-f1"
+	Series   string // the human-facing repo group this pair belongs to,
 	// e.g. "graft-test-v2" — several pairs (one per forge/Radicle side)
 	// can share a series so the dashboard shows one row per repo, not
 	// one per pair.
@@ -199,6 +208,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 
 // ActivityEntry is one row of activity_log.
 type ActivityEntry struct {
+	ID int64 // activity_log.id, used as the stable suffix of ActivityPub Note URIs
 	Activity
 	OccurredAt time.Time
 }
@@ -206,22 +216,66 @@ type ActivityEntry struct {
 // ActivitySince returns every activity entry at or after since, newest first.
 func (s *Store) ActivitySince(since time.Time) ([]ActivityEntry, error) {
 	rows, err := s.db.Query(`
-SELECT repo_pair, kind, direction, summary, url, series, series_url, occurred_at FROM activity_log
+SELECT id, repo_pair, kind, direction, summary, url, series, series_url, occurred_at FROM activity_log
 WHERE occurred_at >= ?
 ORDER BY occurred_at DESC
 `, since.UTC().Format(time.RFC3339))
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	return scanActivityRows(rows)
+}
 
+// ActivityForSeries returns the most recent activity entries for one
+// series, newest first, capped at limit — used to build that series'
+// ActivityPub outbox.
+func (s *Store) ActivityForSeries(series string, limit int) ([]ActivityEntry, error) {
+	rows, err := s.db.Query(`
+SELECT id, repo_pair, kind, direction, summary, url, series, series_url, occurred_at FROM activity_log
+WHERE series = ?
+ORDER BY occurred_at DESC
+LIMIT ?
+`, series, limit)
+	if err != nil {
+		return nil, err
+	}
+	return scanActivityRows(rows)
+}
+
+// ActivityByID looks up one activity_log row by id, e.g. to resolve an
+// ActivityPub Note URI (/actors/{series}/notes/{id}) back to the mirrored
+// item it describes.
+func (s *Store) ActivityByID(id int64) (*ActivityEntry, error) {
+	row := s.db.QueryRow(`
+SELECT id, repo_pair, kind, direction, summary, url, series, series_url, occurred_at FROM activity_log
+WHERE id = ?
+`, id)
+	var e ActivityEntry
+	var occurredAt string
+	err := row.Scan(&e.ID, &e.RepoPair, &e.Kind, &e.Direction, &e.Summary, &e.URL, &e.Series, &e.SeriesURL, &occurredAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	e.OccurredAt, err = time.Parse(time.RFC3339, occurredAt)
+	if err != nil {
+		return nil, fmt.Errorf("parse occurred_at %q: %w", occurredAt, err)
+	}
+	return &e, nil
+}
+
+func scanActivityRows(rows *sql.Rows) ([]ActivityEntry, error) {
+	defer rows.Close()
 	var out []ActivityEntry
 	for rows.Next() {
 		var e ActivityEntry
 		var occurredAt string
-		if err := rows.Scan(&e.RepoPair, &e.Kind, &e.Direction, &e.Summary, &e.URL, &e.Series, &e.SeriesURL, &occurredAt); err != nil {
+		if err := rows.Scan(&e.ID, &e.RepoPair, &e.Kind, &e.Direction, &e.Summary, &e.URL, &e.Series, &e.SeriesURL, &occurredAt); err != nil {
 			return nil, err
 		}
+		var err error
 		e.OccurredAt, err = time.Parse(time.RFC3339, occurredAt)
 		if err != nil {
 			return nil, fmt.Errorf("parse occurred_at %q: %w", occurredAt, err)
@@ -229,4 +283,37 @@ ORDER BY occurred_at DESC
 		out = append(out, e)
 	}
 	return out, rows.Err()
+}
+
+// ActorKeys is one series' ActivityPub actor keypair, PEM-encoded.
+type ActorKeys struct {
+	PrivateKeyPEM string
+	PublicKeyPEM  string
+}
+
+// ActorKeys returns the stored keypair for a series, or nil if none has
+// been generated yet.
+func (s *Store) ActorKeys(series string) (*ActorKeys, error) {
+	row := s.db.QueryRow(`SELECT private_key, public_key FROM ap_actor WHERE series = ?`, series)
+	var k ActorKeys
+	err := row.Scan(&k.PrivateKeyPEM, &k.PublicKeyPEM)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &k, nil
+}
+
+// SaveActorKeys stores a newly generated keypair for a series. Safe to call
+// concurrently: if another goroutine already inserted one, this becomes a
+// no-op via INSERT OR IGNORE, and the caller should re-read with
+// ActorKeys to get whichever copy won.
+func (s *Store) SaveActorKeys(series string, k ActorKeys) error {
+	_, err := s.db.Exec(`
+INSERT OR IGNORE INTO ap_actor (series, private_key, public_key, created_at)
+VALUES (?, ?, ?, ?)
+`, series, k.PrivateKeyPEM, k.PublicKeyPEM, time.Now().UTC().Format(time.RFC3339))
+	return err
 }
