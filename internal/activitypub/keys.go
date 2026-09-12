@@ -42,3 +42,21 @@ func ParsePrivateKey(pemStr string) (*rsa.PrivateKey, error) {
 	}
 	return x509.ParsePKCS1PrivateKey(block.Bytes)
 }
+
+// ParsePublicKey decodes a PEM-encoded RSA public key, e.g. one fetched
+// from a remote actor's publicKeyPem field.
+func ParsePublicKey(pemStr string) (*rsa.PublicKey, error) {
+	block, _ := pem.Decode([]byte(pemStr))
+	if block == nil {
+		return nil, fmt.Errorf("no PEM block found in public key")
+	}
+	key, err := x509.ParsePKIXPublicKey(block.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("parse public key: %w", err)
+	}
+	rsaKey, ok := key.(*rsa.PublicKey)
+	if !ok {
+		return nil, fmt.Errorf("public key is not RSA")
+	}
+	return rsaKey, nil
+}
