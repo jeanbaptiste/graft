@@ -10,6 +10,10 @@ It runs on a timer, keeps state in a local SQLite file, and never force-pushes. 
 - **Issues**: Forgejo issues become Radicle issues and vice versa. Create-only for now — edits made after the first mirror aren't propagated yet.
 - **Patches / pull requests**: a Forgejo PR opens a Radicle patch (and back), by pushing the PR's head commit to `refs/patches` on the Radicle side, or as a branch + PR on the Forgejo side.
 
+## Planned: Forgejo-to-Forgejo via Authorized Integrations
+
+Right now, two Forgejo instances stay in sync by both pairing with the same Radicle repository — Radicle is the hub. An alternative worth supporting directly: one instance's CI authenticates straight to another's API using [Forgejo's Authorized Integrations](https://forgejo.org) (a short-lived OIDC token, no stored secret), instead of routing through Radicle at all. Not implemented yet — noted here so the config shape leaves room for it.
+
 ## Why
 
 Forgejo and Radicle solve the same problem — hosting and reviewing changes to a git repository — with opposite architectures: one is a server you point a browser at, the other is a peer-to-peer protocol with no server at all. `graft` lets a project exist on both.
