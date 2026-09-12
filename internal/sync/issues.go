@@ -23,6 +23,8 @@ type IssueSyncer struct {
 	State         *state.Store
 	ForgejoWebURL string // https://host/owner/repo, for links in the UI
 	RadicleWebURL string // https://explorer/nodes/host/rid, for links in the UI
+	Series        string // dashboard row this pair's activity groups under
+	SeriesURL     string // where clicking that row's name goes
 }
 
 func (s *IssueSyncer) Sync() error {
@@ -70,7 +72,11 @@ func (s *IssueSyncer) mirrorForgejoToRadicle(fi forgejo.Issue) error {
 	}); err != nil {
 		return err
 	}
-	s.State.LogActivity(s.RepoPair, "issue", state.ForgejoToRadicle, fi.Title, s.RadicleWebURL+"/issues/"+radicleID)
+	s.State.LogActivity(state.Activity{
+		RepoPair: s.RepoPair, Series: s.Series, SeriesURL: s.SeriesURL,
+		Kind: "issue", Direction: state.ForgejoToRadicle, Summary: fi.Title,
+		URL: s.RadicleWebURL + "/issues/" + radicleID,
+	})
 	return nil
 }
 
@@ -96,7 +102,11 @@ func (s *IssueSyncer) mirrorRadicleToForgejo(ri radicle.Issue) error {
 	}); err != nil {
 		return err
 	}
-	s.State.LogActivity(s.RepoPair, "issue", state.RadicleToForgejo, ri.Title, fmt.Sprintf("%s/issues/%d", s.ForgejoWebURL, fi.Index))
+	s.State.LogActivity(state.Activity{
+		RepoPair: s.RepoPair, Series: s.Series, SeriesURL: s.SeriesURL,
+		Kind: "issue", Direction: state.RadicleToForgejo, Summary: ri.Title,
+		URL: fmt.Sprintf("%s/issues/%d", s.ForgejoWebURL, fi.Index),
+	})
 	return nil
 }
 

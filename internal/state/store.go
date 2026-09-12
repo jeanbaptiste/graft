@@ -68,6 +68,8 @@ CREATE TABLE IF NOT EXISTS activity_log (
 	direction   TEXT NOT NULL, -- 'forgejo_to_radicle' or 'radicle_to_forgejo'
 	summary     TEXT NOT NULL,
 	url         TEXT NOT NULL DEFAULT '',
+	series      TEXT NOT NULL DEFAULT '',
+	series_url  TEXT NOT NULL DEFAULT '',
 	occurred_at TEXT NOT NULL
 );
 
@@ -77,11 +79,17 @@ CREATE INDEX IF NOT EXISTS idx_activity_log_occurred_at
 	if err != nil {
 		return err
 	}
-	// url was added after the table already shipped once; ALTER is a no-op
-	// (ignored) on a fresh db where the CREATE above already included it.
-	_, err = db.Exec(`ALTER TABLE activity_log ADD COLUMN url TEXT NOT NULL DEFAULT ''`)
-	if err != nil && !strings.Contains(err.Error(), "duplicate column") {
-		return err
+	// These columns were added after the table already shipped once; each
+	// ALTER is a no-op (ignored) on a fresh db where the CREATE above
+	// already included it.
+	for _, stmt := range []string{
+		`ALTER TABLE activity_log ADD COLUMN url TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE activity_log ADD COLUMN series TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE activity_log ADD COLUMN series_url TEXT NOT NULL DEFAULT ''`,
+	} {
+		if _, err := db.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+			return err
+		}
 	}
 	return nil
 }
@@ -155,39 +163,50 @@ DO UPDATE SET content_hash = excluded.content_hash, synced_at = excluded.synced_
 	return err
 }
 
-// Direction names for LogActivity, kept as constants so callers can't typo
-// a value the status page's rendering silently fails to recognize.
+// Activity is one thing that was actually mirrored, for the status page.
+type Activity struct {
+	RepoPair  string // the sync pair that did it, e.g. "graft-test-v2-f1"
+	Series    string // the human-facing repo group this pair belongs to,
+	// e.g. "graft-test-v2" — several pairs (one per forge/Radicle side)
+	// can share a series so the dashboard shows one row per repo, not
+	// one per pair.
+	SeriesURL string // where clicking the series' own name should go
+	Kind      string // "git", "issue", "patch"
+	Direction string // ForgejoToRadicle or RadicleToForgejo
+	Summary   string
+	URL       string // where to send someone who clicks this entry — the
+	// forge or Radicle page for the thing that now exists because of
+	// this sync; "" if none is known.
+}
+
+// Direction values for Activity.Direction, kept as constants so callers
+// can't typo a value the status page's rendering silently fails to
+// recognize.
 const (
 	ForgejoToRadicle = "forgejo_to_radicle"
 	RadicleToForgejo = "radicle_to_forgejo"
 )
 
-// LogActivity records one thing that was actually mirrored, for the status
-// page. Call it once per commit/issue/patch, not once per sync pass. url is
-// where to send someone who clicks this entry — the forge or Radicle page
-// for the thing that now exists because of this sync; "" if none is known.
-func (s *Store) LogActivity(repoPair, kind, direction, summary, url string) error {
+// LogActivity records one Activity. Call it once per commit/issue/patch,
+// not once per sync pass.
+func (s *Store) LogActivity(a Activity) error {
 	_, err := s.db.Exec(`
-INSERT INTO activity_log (repo_pair, kind, direction, summary, url, occurred_at)
-VALUES (?, ?, ?, ?, ?, ?)
-`, repoPair, kind, direction, summary, url, time.Now().UTC().Format(time.RFC3339))
+INSERT INTO activity_log (repo_pair, kind, direction, summary, url, series, series_url, occurred_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+`, a.RepoPair, a.Kind, a.Direction, a.Summary, a.URL, a.Series, a.SeriesURL, time.Now().UTC().Format(time.RFC3339))
 	return err
 }
 
 // ActivityEntry is one row of activity_log.
 type ActivityEntry struct {
-	RepoPair   string
-	Kind       string
-	Direction  string
-	Summary    string
-	URL        string
+	Activity
 	OccurredAt time.Time
 }
 
 // ActivitySince returns every activity entry at or after since, newest first.
 func (s *Store) ActivitySince(since time.Time) ([]ActivityEntry, error) {
 	rows, err := s.db.Query(`
-SELECT repo_pair, kind, direction, summary, url, occurred_at FROM activity_log
+SELECT repo_pair, kind, direction, summary, url, series, series_url, occurred_at FROM activity_log
 WHERE occurred_at >= ?
 ORDER BY occurred_at DESC
 `, since.UTC().Format(time.RFC3339))
@@ -200,7 +219,7 @@ ORDER BY occurred_at DESC
 	for rows.Next() {
 		var e ActivityEntry
 		var occurredAt string
-		if err := rows.Scan(&e.RepoPair, &e.Kind, &e.Direction, &e.Summary, &e.URL, &occurredAt); err != nil {
+		if err := rows.Scan(&e.RepoPair, &e.Kind, &e.Direction, &e.Summary, &e.URL, &e.Series, &e.SeriesURL, &occurredAt); err != nil {
 			return nil, err
 		}
 		e.OccurredAt, err = time.Parse(time.RFC3339, occurredAt)

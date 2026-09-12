@@ -56,7 +56,7 @@ func main() {
 	runAll := func() {
 		for _, rs := range syncers {
 			gitErr, issuesErr, patchErr := rs.Run(log)
-			tracker.Record(rs.Name(), gitErr, issuesErr, patchErr)
+			tracker.Record(rs.Name(), rs.Series(), gitErr, issuesErr, patchErr)
 		}
 	}
 

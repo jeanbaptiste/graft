@@ -27,10 +27,13 @@ type GitSyncer struct {
 	WorkDir       string // local clone, created on first run if absent
 	ForgejoURL    string // authenticated clone URL (token embedded), for git
 	ForgejoWebURL string // https://host/owner/repo, for links in the UI
+	RadicleWebURL string // https://explorer/nodes/host/rid, for links in the UI
 	ForgejoBranch string
 	RID           string
 	RadHome       string
 	State         *state.Store
+	Series        string // dashboard row this pair's activity groups under
+	SeriesURL     string // where clicking that row's name goes
 }
 
 func (g *GitSyncer) run(args ...string) (string, error) {
@@ -200,15 +203,18 @@ func (g *GitSyncer) pushBranch(from, to, oldToHead, direction string) error {
 	if _, err := g.run("push", to, "FETCH_HEAD:refs/heads/"+g.ForgejoBranch); err != nil {
 		return fmt.Errorf("push %s: %w", to, err)
 	}
-	g.logMirroredCommits(oldToHead, direction)
+	g.logMirroredCommits(oldToHead, direction, to)
 	return nil
 }
 
 // logMirroredCommits records one activity_log entry per commit newly
 // reachable from FETCH_HEAD that wasn't reachable from oldHead. Best-effort:
 // a failure here never fails the sync itself, it just leaves the status
-// page's calendar short an entry.
-func (g *GitSyncer) logMirroredCommits(oldHead, direction string) {
+// page's calendar short an entry. to is "forgejo" or "rad" — the remote the
+// commits were just pushed to — so the logged link (and the dashboard's
+// derived server label) points at where the content actually landed,
+// instead of always pointing at Forgejo regardless of direction.
+func (g *GitSyncer) logMirroredCommits(oldHead, direction, to string) {
 	rangeSpec := "FETCH_HEAD"
 	if oldHead != "" {
 		rangeSpec = oldHead + "..FETCH_HEAD"
@@ -229,9 +235,19 @@ func (g *GitSyncer) logMirroredCommits(oldHead, direction string) {
 			continue
 		}
 		url := ""
-		if g.ForgejoWebURL != "" {
-			url = g.ForgejoWebURL + "/commit/" + full
+		switch to {
+		case "rad":
+			if g.RadicleWebURL != "" {
+				url = g.RadicleWebURL + "/commits/" + full
+			}
+		default:
+			if g.ForgejoWebURL != "" {
+				url = g.ForgejoWebURL + "/commit/" + full
+			}
 		}
-		g.State.LogActivity(g.RepoPair, "git", direction, summary, url)
+		g.State.LogActivity(state.Activity{
+			RepoPair: g.RepoPair, Series: g.Series, SeriesURL: g.SeriesURL,
+			Kind: "git", Direction: direction, Summary: summary, URL: url,
+		})
 	}
 }

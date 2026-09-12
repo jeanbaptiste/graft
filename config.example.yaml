@@ -10,6 +10,10 @@ source_url: https://git.example.org/alice/graft
 
 repos:
   - name: testrepo
+    # Groups this pair with others that mirror the same underlying repo
+    # (one pair per forge/Radicle side) under one row in the status
+    # dashboard's heatmap. Defaults to `name` — its own row — if unset.
+    series: testrepo
     forgejo:
       base_url: https://f1.cyberwild.org
       owner: forgeadmin

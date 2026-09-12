@@ -26,6 +26,10 @@ type RepoPair struct {
 	Forgejo ForgejoTarget `yaml:"forgejo"`
 	Radicle RadicleTarget `yaml:"radicle"`
 	Sync    SyncScope     `yaml:"sync"`
+	// Series groups this pair with others that mirror the same underlying
+	// repository (one per forge/Radicle side) under one row in the status
+	// dashboard. Defaults to Name — i.e. its own row — if unset.
+	Series string `yaml:"series"`
 }
 
 // ForgejoTarget identifies a repository on a Forgejo instance and where to

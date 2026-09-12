@@ -44,22 +44,35 @@ func New(pair config.RepoPair, st *state.Store, workDir string) (*RepoSyncer, er
 	forgejoWebURL := strings.TrimRight(pair.Forgejo.BaseURL, "/") + "/" + pair.Forgejo.Owner + "/" + pair.Forgejo.Repo
 	radicleWebURL := radicleExplorerLink(pair.Radicle)
 
+	series := pair.Series
+	if series == "" {
+		series = pair.Name
+	}
+	seriesURL := radicleWebURL
+	if seriesURL == "" {
+		seriesURL = forgejoWebURL
+	}
+
 	if pair.Sync.Git || pair.Sync.Patches {
 		rs.git = &GitSyncer{
 			RepoPair:      pair.Name,
 			WorkDir:       workDir,
 			ForgejoURL:    authenticatedCloneURL(repo.CloneURL, token),
 			ForgejoWebURL: forgejoWebURL,
+			RadicleWebURL: radicleWebURL,
 			ForgejoBranch: repo.DefaultBranch,
 			RID:           pair.Radicle.RID,
 			RadHome:       pair.Radicle.RadHome,
 			State:         st,
+			Series:        series,
+			SeriesURL:     seriesURL,
 		}
 	}
 	if pair.Sync.Issues {
 		rs.issues = &IssueSyncer{
 			RepoPair: pair.Name, Forgejo: fc, Radicle: rc, State: st,
 			ForgejoWebURL: forgejoWebURL, RadicleWebURL: radicleWebURL,
+			Series: series, SeriesURL: seriesURL,
 		}
 	}
 	if pair.Sync.Patches {
@@ -73,6 +86,8 @@ func New(pair config.RepoPair, st *state.Store, workDir string) (*RepoSyncer, er
 			State:         st,
 			ForgejoWebURL: forgejoWebURL,
 			RadicleWebURL: radicleWebURL,
+			Series:        series,
+			SeriesURL:     seriesURL,
 		}
 	}
 	return rs, nil
@@ -94,6 +109,15 @@ func radicleExplorerLink(rt config.RadicleTarget) string {
 
 // Name is this pair's name, as given in the config.
 func (rs *RepoSyncer) Name() string { return rs.pair.Name }
+
+// Series is the dashboard row this pair's activity groups under: its
+// configured series, or its own name if unset.
+func (rs *RepoSyncer) Series() string {
+	if rs.pair.Series != "" {
+		return rs.pair.Series
+	}
+	return rs.pair.Name
+}
 
 // Run executes every enabled scope once, logging and continuing past
 // per-scope errors so one broken scope doesn't block the others. It
