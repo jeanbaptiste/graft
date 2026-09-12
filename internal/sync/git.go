@@ -35,6 +35,14 @@ type GitSyncer struct {
 	Series        string         // dashboard row this pair's activity groups under
 	SeriesURL     string         // where clicking that row's name goes
 	Bluesky       *BlueskyPoster // nil unless this pair has bluesky configured
+	// AuthorizedIntegrationSource, if set, names another pair's Forgejo
+	// host that already pushes new commits directly into this pair's
+	// Forgejo via Authorized Integrations (see authint.go) — faster than
+	// this pair waiting for the next poll to relay it via Radicle. When
+	// set, Sync skips its own rad -> forgejo push and just observes
+	// whether the content has already arrived, falling back to pushing it
+	// itself only once a real divergence would otherwise be reported.
+	AuthorizedIntegrationSource string
 }
 
 func (g *GitSyncer) run(args ...string) (string, error) {
@@ -159,6 +167,14 @@ func (g *GitSyncer) Sync() error {
 
 	case forgejoHead == "" || forgejoHead == lastForgejo:
 		// Forgejo hasn't moved: rad is ahead.
+		if g.AuthorizedIntegrationSource != "" {
+			// Someone else's CI already pushes directly into this
+			// Forgejo (see AuthorizedIntegrationSource's doc comment) —
+			// faster than waiting for us to relay it via Radicle.
+			// Nothing to do; next pass sees forgejoHead == radHead once
+			// it arrives, same as any other convergence.
+			break
+		}
 		if err := g.pushBranch("rad", "forgejo", forgejoHead, state.RadicleToForgejo); err != nil {
 			return fmt.Errorf("mirror rad -> forgejo: %w", err)
 		}
@@ -172,6 +188,9 @@ func (g *GitSyncer) Sync() error {
 
 	case g.isAncestor(forgejoHead, radHead):
 		// Symmetric case: forgejo's tip is contained in rad's.
+		if g.AuthorizedIntegrationSource != "" {
+			break
+		}
 		if err := g.pushBranch("rad", "forgejo", forgejoHead, state.RadicleToForgejo); err != nil {
 			return fmt.Errorf("mirror rad -> forgejo: %w", err)
 		}

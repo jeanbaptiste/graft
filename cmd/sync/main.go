@@ -49,6 +49,7 @@ func main() {
 	syncers := make([]*sync.RepoSyncer, 0, len(cfg.Repos))
 	syncersByPair := map[string]*sync.RepoSyncer{}
 	syncersBySeries := map[string]*sync.RepoSyncer{}
+	pairsBySeries := map[string][]*sync.RepoSyncer{}
 	for _, pair := range cfg.Repos {
 		rs, err := sync.New(pair, st, sync.WorkDirFor(stateDir, pair.Name))
 		if err != nil {
@@ -60,7 +61,9 @@ func main() {
 		if _, ok := syncersBySeries[rs.Series()]; !ok {
 			syncersBySeries[rs.Series()] = rs
 		}
+		pairsBySeries[rs.Series()] = append(pairsBySeries[rs.Series()], rs)
 	}
+	detectAuthorizedIntegrations(pairsBySeries, log)
 
 	topology := buildTopology(cfg)
 	blueskyConfigured := map[string]bool{}
@@ -189,6 +192,37 @@ func buildTopology(cfg *config.Config) map[string][]status.ServerRef {
 		add(series, rHost, sync.RadicleExplorerLink(pair.Radicle))
 	}
 	return topology
+}
+
+// detectAuthorizedIntegrations checks, for every pair of Forgejo hosts
+// sharing a series, whether one side already has a Forgejo Actions
+// workflow pushing directly into the other via Authorized Integrations
+// (see internal/sync's authint.go) — and if so, tells the receiving
+// pair's GitSyncer to stop relaying that content via Radicle itself,
+// since the direct path is faster. Run once at startup: workflow files
+// don't change often enough to justify re-checking every pass.
+func detectAuthorizedIntegrations(pairsBySeries map[string][]*sync.RepoSyncer, log *slog.Logger) {
+	for series, pairs := range pairsBySeries {
+		if len(pairs) < 2 {
+			continue
+		}
+		for _, source := range pairs {
+			for _, dest := range pairs {
+				if source == dest {
+					continue
+				}
+				destHost := dest.ForgejoHost()
+				if destHost == "" {
+					continue
+				}
+				if sync.HasAuthorizedIntegration(source.ForgejoClient(), destHost) {
+					log.Info("authorized integration detected",
+						"series", series, "source", source.ForgejoHost(), "target", destHost)
+					dest.SetAuthorizedIntegrationSource(source.ForgejoHost())
+				}
+			}
+		}
+	}
 }
 
 func lastSlash(s string) int {

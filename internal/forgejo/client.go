@@ -5,6 +5,7 @@ package forgejo
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -152,4 +153,51 @@ func (c *Client) CreateIssueComment(index int64, body string) error {
 	path := fmt.Sprintf("/repos/%s/%s/issues/%d/comments", c.owner, c.repo, index)
 	req := map[string]string{"body": body}
 	return c.do(http.MethodPost, path, req, nil)
+}
+
+// contentEntry is the subset of Forgejo's contents API response this
+// client reads, shared by both directory listings and single-file fetches.
+type contentEntry struct {
+	Name     string `json:"name"`
+	Type     string `json:"type"` // "file" or "dir"
+	Content  string `json:"content,omitempty"`
+	Encoding string `json:"encoding,omitempty"`
+}
+
+// ListWorkflowFiles lists file names directly under .forgejo/workflows/.
+// Returns an empty slice (not an error) if the directory doesn't exist —
+// most repos have no workflows at all, which is a normal, expected state.
+func (c *Client) ListWorkflowFiles() ([]string, error) {
+	var entries []contentEntry
+	path := fmt.Sprintf("/repos/%s/%s/contents/.forgejo/workflows", c.owner, c.repo)
+	if err := c.do(http.MethodGet, path, nil, &entries); err != nil {
+		if strings.Contains(err.Error(), "HTTP 404") {
+			return nil, nil
+		}
+		return nil, err
+	}
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if e.Type == "file" {
+			names = append(names, e.Name)
+		}
+	}
+	return names, nil
+}
+
+// GetFileContent fetches and decodes one file's text content.
+func (c *Client) GetFileContent(path string) (string, error) {
+	var entry contentEntry
+	apiPath := fmt.Sprintf("/repos/%s/%s/contents/%s", c.owner, c.repo, path)
+	if err := c.do(http.MethodGet, apiPath, nil, &entry); err != nil {
+		return "", err
+	}
+	if entry.Encoding == "base64" {
+		decoded, err := base64.StdEncoding.DecodeString(entry.Content)
+		if err != nil {
+			return "", fmt.Errorf("decode %s: %w", path, err)
+		}
+		return string(decoded), nil
+	}
+	return entry.Content, nil
 }

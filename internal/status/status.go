@@ -711,7 +711,7 @@ var dashboardTmpl = template.Must(template.New("dashboard").Parse(`<!doctype htm
         <summary class="series-label">
           <span class="dot{{if not .OK}} bad{{end}}"></span>
           <span class="series-name">{{.Name}}</span>
-          <span class="series-count">{{len .SubRows}} mirrored side{{if ne (len .SubRows) 1}}s{{end}}</span>
+          <span class="series-count">{{len .SubRows}} mirror{{if ne (len .SubRows) 1}}s{{end}}</span>
         </summary>
         <div class="subrows">
         {{range .SubRows}}

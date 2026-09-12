@@ -126,6 +126,32 @@ func RadicleExplorerLink(rt config.RadicleTarget) string {
 // Name is this pair's name, as given in the config.
 func (rs *RepoSyncer) Name() string { return rs.pair.Name }
 
+// ForgejoClient exposes this pair's Forgejo client for cross-pair
+// detection helpers (see HasAuthorizedIntegration) that need to make API
+// calls outside the normal sync flow.
+func (rs *RepoSyncer) ForgejoClient() *forgejo.Client { return rs.forgejo }
+
+// ForgejoHost is the host this pair's Forgejo repo lives on, e.g.
+// "f1.cyberwild.org".
+func (rs *RepoSyncer) ForgejoHost() string {
+	u, err := url.Parse(rs.pair.Forgejo.BaseURL)
+	if err != nil {
+		return ""
+	}
+	return u.Host
+}
+
+// SetAuthorizedIntegrationSource declares that another pair's Forgejo host
+// already pushes directly into this pair's Forgejo via Authorized
+// Integrations (see authint.go and GitSyncer.AuthorizedIntegrationSource).
+// Set once, after every pair in a series is known, from cmd/sync/main.go —
+// a single pair's own construction can't see its siblings.
+func (rs *RepoSyncer) SetAuthorizedIntegrationSource(host string) {
+	if rs.git != nil {
+		rs.git.AuthorizedIntegrationSource = host
+	}
+}
+
 // Series is the dashboard row this pair's activity groups under: its
 // configured series, or its own name if unset.
 func (rs *RepoSyncer) Series() string {
