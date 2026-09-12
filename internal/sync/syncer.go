@@ -42,7 +42,7 @@ func New(pair config.RepoPair, st *state.Store, workDir string) (*RepoSyncer, er
 	rs := &RepoSyncer{pair: pair, forgejo: fc, radicle: rc}
 
 	forgejoWebURL := strings.TrimRight(pair.Forgejo.BaseURL, "/") + "/" + pair.Forgejo.Owner + "/" + pair.Forgejo.Repo
-	radicleWebURL := radicleExplorerLink(pair.Radicle)
+	radicleWebURL := RadicleExplorerLink(pair.Radicle)
 
 	series := pair.Series
 	if series == "" {
@@ -93,10 +93,10 @@ func New(pair config.RepoPair, st *state.Store, workDir string) (*RepoSyncer, er
 	return rs, nil
 }
 
-// radicleExplorerLink builds the base URL for "view this on Radicle" links:
+// RadicleExplorerLink builds the base URL for "view this on Radicle" links:
 // <explorer>/nodes/<httpd-host>/<rid>. Empty if no explorer_url is
 // configured, so templates can skip the link entirely.
-func radicleExplorerLink(rt config.RadicleTarget) string {
+func RadicleExplorerLink(rt config.RadicleTarget) string {
 	if rt.ExplorerURL == "" {
 		return ""
 	}

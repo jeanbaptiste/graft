@@ -7,7 +7,9 @@ import (
 	"flag"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
+	"strings"
 	"time"
 
 	"graft/internal/config"
@@ -53,6 +55,7 @@ func main() {
 	}
 
 	tracker := status.NewTracker(st, cfg.SourceURL)
+	tracker.SetTopology(buildTopology(cfg))
 	runAll := func() {
 		for _, rs := range syncers {
 			gitErr, issuesErr, patchErr := rs.Run(log)
@@ -78,6 +81,47 @@ func main() {
 	for range ticker.C {
 		runAll()
 	}
+}
+
+// buildTopology declares every mirror target configured for each series
+// (its Forgejo side and its Radicle side), so the dashboard can show a
+// side that's never produced an event yet — not just sides the activity
+// log happens to mention.
+func buildTopology(cfg *config.Config) map[string][]status.ServerRef {
+	topology := map[string][]status.ServerRef{}
+	seen := map[string]bool{}
+	add := func(series, host, repoURL string) {
+		if host == "" {
+			return
+		}
+		key := series + "|" + host
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		topology[series] = append(topology[series], status.ServerRef{Label: host, URL: repoURL})
+	}
+
+	for _, pair := range cfg.Repos {
+		series := pair.Series
+		if series == "" {
+			series = pair.Name
+		}
+
+		fHost := ""
+		if u, err := url.Parse(pair.Forgejo.BaseURL); err == nil {
+			fHost = u.Host
+		}
+		fURL := strings.TrimRight(pair.Forgejo.BaseURL, "/") + "/" + pair.Forgejo.Owner + "/" + pair.Forgejo.Repo
+		add(series, fHost, fURL)
+
+		rHost := ""
+		if u, err := url.Parse(pair.Radicle.HTTPBaseURL); err == nil {
+			rHost = u.Host
+		}
+		add(series, rHost, sync.RadicleExplorerLink(pair.Radicle))
+	}
+	return topology
 }
 
 func lastSlash(s string) int {
