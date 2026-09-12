@@ -148,26 +148,26 @@ func (g *GitSyncer) Sync() error {
 
 	case radHead == "" || radHead == lastRad:
 		// Radicle hasn't moved since we last looked: forgejo is ahead.
-		if err := g.pushBranch("forgejo", "rad"); err != nil {
+		if err := g.pushBranch("forgejo", "rad", radHead, state.ForgejoToRadicle); err != nil {
 			return fmt.Errorf("mirror forgejo -> rad: %w", err)
 		}
 
 	case forgejoHead == "" || forgejoHead == lastForgejo:
 		// Forgejo hasn't moved: rad is ahead.
-		if err := g.pushBranch("rad", "forgejo"); err != nil {
+		if err := g.pushBranch("rad", "forgejo", forgejoHead, state.RadicleToForgejo); err != nil {
 			return fmt.Errorf("mirror rad -> forgejo: %w", err)
 		}
 
 	case g.isAncestor(lastForgejo, forgejoHead) && g.isAncestor(lastRad, radHead) &&
 		g.isAncestor(radHead, forgejoHead):
 		// Both moved, but rad's tip is contained in forgejo's: forgejo wins.
-		if err := g.pushBranch("forgejo", "rad"); err != nil {
+		if err := g.pushBranch("forgejo", "rad", radHead, state.ForgejoToRadicle); err != nil {
 			return fmt.Errorf("mirror forgejo -> rad: %w", err)
 		}
 
 	case g.isAncestor(forgejoHead, radHead):
 		// Symmetric case: forgejo's tip is contained in rad's.
-		if err := g.pushBranch("rad", "forgejo"); err != nil {
+		if err := g.pushBranch("rad", "forgejo", forgejoHead, state.RadicleToForgejo); err != nil {
 			return fmt.Errorf("mirror rad -> forgejo: %w", err)
 		}
 
@@ -188,12 +188,38 @@ func (g *GitSyncer) Sync() error {
 	return g.State.SetGitCursor(g.RepoPair, forgejoHead, radHead)
 }
 
-func (g *GitSyncer) pushBranch(from, to string) error {
+// pushBranch fetches g.ForgejoBranch from "from" and pushes it to "to".
+// oldToHead is that branch's head on "to" before the push (possibly ""),
+// used only to log which commits this pass actually moved, for the status
+// page's activity calendar.
+func (g *GitSyncer) pushBranch(from, to, oldToHead, direction string) error {
 	if _, err := g.run("fetch", "-q", from, g.ForgejoBranch); err != nil {
 		return fmt.Errorf("fetch %s: %w", from, err)
 	}
 	if _, err := g.run("push", to, "FETCH_HEAD:refs/heads/"+g.ForgejoBranch); err != nil {
 		return fmt.Errorf("push %s: %w", to, err)
 	}
+	g.logMirroredCommits(oldToHead, direction)
 	return nil
+}
+
+// logMirroredCommits records one activity_log entry per commit newly
+// reachable from FETCH_HEAD that wasn't reachable from oldHead. Best-effort:
+// a failure here never fails the sync itself, it just leaves the status
+// page's calendar short an entry.
+func (g *GitSyncer) logMirroredCommits(oldHead, direction string) {
+	rangeSpec := "FETCH_HEAD"
+	if oldHead != "" {
+		rangeSpec = oldHead + "..FETCH_HEAD"
+	}
+	out, err := g.run("log", "--pretty=format:%h %s", rangeSpec)
+	if err != nil || out == "" {
+		return
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if line == "" {
+			continue
+		}
+		g.State.LogActivity(g.RepoPair, "git", direction, line)
+	}
 }

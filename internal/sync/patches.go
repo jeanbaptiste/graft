@@ -106,12 +106,16 @@ func (s *PatchSyncer) mirrorForgejoToRadicle(pr forgejo.PullRequest) error {
 		return fmt.Errorf("could not parse patch id from: %q", out)
 	}
 
-	return s.State.Upsert(s.RepoPair, state.ItemMapping{
+	if err := s.State.Upsert(s.RepoPair, state.ItemMapping{
 		Kind:        "patch",
 		ForgejoID:   pr.Index,
 		RadicleID:   m[1],
 		ContentHash: hashText(pr.Title, pr.Body),
-	})
+	}); err != nil {
+		return err
+	}
+	s.State.LogActivity(s.RepoPair, "patch", state.ForgejoToRadicle, pr.Title)
+	return nil
 }
 
 func (s *PatchSyncer) mirrorRadicleToForgejo(p radicle.Patch) error {
@@ -143,12 +147,16 @@ func (s *PatchSyncer) mirrorRadicleToForgejo(p radicle.Patch) error {
 		return fmt.Errorf("create forgejo pull request: %w", err)
 	}
 
-	return s.State.Upsert(s.RepoPair, state.ItemMapping{
+	if err := s.State.Upsert(s.RepoPair, state.ItemMapping{
 		Kind:        "patch",
 		ForgejoID:   pr.Index,
 		RadicleID:   p.ID,
 		ContentHash: hashText(p.Title, latest.Description),
-	})
+	}); err != nil {
+		return err
+	}
+	s.State.LogActivity(s.RepoPair, "patch", state.RadicleToForgejo, p.Title)
+	return nil
 }
 
 func localPRBranch(index int64) string {

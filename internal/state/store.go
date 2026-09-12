@@ -6,6 +6,7 @@ package state
 import (
 	"database/sql"
 	"fmt"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -54,6 +55,22 @@ CREATE INDEX IF NOT EXISTS idx_item_mapping_forgejo
 	ON item_mapping (repo_pair, kind, forgejo_id);
 CREATE INDEX IF NOT EXISTS idx_item_mapping_radicle
 	ON item_mapping (repo_pair, kind, radicle_id);
+
+-- One row per thing actually mirrored: a commit, an issue, a patch. This is
+-- what the status page's activity calendar and commit list read from — it's
+-- an append-only log, never updated, so it can't itself be a source of the
+-- kind of state-loss bug that hit item_mapping.
+CREATE TABLE IF NOT EXISTS activity_log (
+	id          INTEGER PRIMARY KEY AUTOINCREMENT,
+	repo_pair   TEXT NOT NULL,
+	kind        TEXT NOT NULL, -- 'git', 'issue', 'patch'
+	direction   TEXT NOT NULL, -- 'forgejo_to_radicle' or 'radicle_to_forgejo'
+	summary     TEXT NOT NULL,
+	occurred_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_activity_log_occurred_at
+	ON activity_log (occurred_at);
 `)
 	return err
 }
@@ -125,4 +142,58 @@ ON CONFLICT (repo_pair, kind, forgejo_id, radicle_id)
 DO UPDATE SET content_hash = excluded.content_hash, synced_at = excluded.synced_at
 `, repoPair, m.Kind, m.ForgejoID, m.RadicleID, m.ContentHash)
 	return err
+}
+
+// Direction names for LogActivity, kept as constants so callers can't typo
+// a value the status page's rendering silently fails to recognize.
+const (
+	ForgejoToRadicle = "forgejo_to_radicle"
+	RadicleToForgejo = "radicle_to_forgejo"
+)
+
+// LogActivity records one thing that was actually mirrored, for the status
+// page. Call it once per commit/issue/patch, not once per sync pass.
+func (s *Store) LogActivity(repoPair, kind, direction, summary string) error {
+	_, err := s.db.Exec(`
+INSERT INTO activity_log (repo_pair, kind, direction, summary, occurred_at)
+VALUES (?, ?, ?, ?, ?)
+`, repoPair, kind, direction, summary, time.Now().UTC().Format(time.RFC3339))
+	return err
+}
+
+// ActivityEntry is one row of activity_log.
+type ActivityEntry struct {
+	RepoPair   string
+	Kind       string
+	Direction  string
+	Summary    string
+	OccurredAt time.Time
+}
+
+// ActivitySince returns every activity entry at or after since, newest first.
+func (s *Store) ActivitySince(since time.Time) ([]ActivityEntry, error) {
+	rows, err := s.db.Query(`
+SELECT repo_pair, kind, direction, summary, occurred_at FROM activity_log
+WHERE occurred_at >= ?
+ORDER BY occurred_at DESC
+`, since.UTC().Format(time.RFC3339))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []ActivityEntry
+	for rows.Next() {
+		var e ActivityEntry
+		var occurredAt string
+		if err := rows.Scan(&e.RepoPair, &e.Kind, &e.Direction, &e.Summary, &occurredAt); err != nil {
+			return nil, err
+		}
+		e.OccurredAt, err = time.Parse(time.RFC3339, occurredAt)
+		if err != nil {
+			return nil, fmt.Errorf("parse occurred_at %q: %w", occurredAt, err)
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
 }

@@ -68,26 +68,32 @@ func New(pair config.RepoPair, st *state.Store, workDir string) (*RepoSyncer, er
 	return rs, nil
 }
 
+// Name is this pair's name, as given in the config.
+func (rs *RepoSyncer) Name() string { return rs.pair.Name }
+
 // Run executes every enabled scope once, logging and continuing past
-// per-scope errors so one broken scope doesn't block the others.
-func (rs *RepoSyncer) Run(log *slog.Logger) {
+// per-scope errors so one broken scope doesn't block the others. It
+// returns each scope's error (nil if disabled or successful) for the
+// caller to report via internal/status.
+func (rs *RepoSyncer) Run(log *slog.Logger) (gitErr, issuesErr, patchErr error) {
 	log = log.With("pair", rs.pair.Name)
 
 	if rs.git != nil {
-		if err := rs.git.Sync(); err != nil {
-			log.Error("git sync failed", "err", err)
+		if gitErr = rs.git.Sync(); gitErr != nil {
+			log.Error("git sync failed", "err", gitErr)
 		}
 	}
 	if rs.issues != nil {
-		if err := rs.issues.Sync(); err != nil {
-			log.Error("issue sync failed", "err", err)
+		if issuesErr = rs.issues.Sync(); issuesErr != nil {
+			log.Error("issue sync failed", "err", issuesErr)
 		}
 	}
 	if rs.patches != nil {
-		if err := rs.patches.Sync(); err != nil {
-			log.Error("patch sync failed", "err", err)
+		if patchErr = rs.patches.Sync(); patchErr != nil {
+			log.Error("patch sync failed", "err", patchErr)
 		}
 	}
+	return gitErr, issuesErr, patchErr
 }
 
 // authenticatedCloneURL embeds a token into an HTTPS clone URL the way

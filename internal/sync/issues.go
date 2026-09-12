@@ -60,12 +60,16 @@ func (s *IssueSyncer) mirrorForgejoToRadicle(fi forgejo.Issue) error {
 		return fmt.Errorf("open radicle issue: %w", err)
 	}
 
-	return s.State.Upsert(s.RepoPair, state.ItemMapping{
+	if err := s.State.Upsert(s.RepoPair, state.ItemMapping{
 		Kind:        "issue",
 		ForgejoID:   fi.Index,
 		RadicleID:   radicleID,
 		ContentHash: hashText(fi.Title, fi.Body),
-	})
+	}); err != nil {
+		return err
+	}
+	s.State.LogActivity(s.RepoPair, "issue", state.ForgejoToRadicle, fi.Title)
+	return nil
 }
 
 func (s *IssueSyncer) mirrorRadicleToForgejo(ri radicle.Issue) error {
@@ -82,12 +86,16 @@ func (s *IssueSyncer) mirrorRadicleToForgejo(ri radicle.Issue) error {
 		return fmt.Errorf("create forgejo issue: %w", err)
 	}
 
-	return s.State.Upsert(s.RepoPair, state.ItemMapping{
+	if err := s.State.Upsert(s.RepoPair, state.ItemMapping{
 		Kind:        "issue",
 		ForgejoID:   fi.Index,
 		RadicleID:   ri.ID,
 		ContentHash: hashText(ri.Title, ri.Body()),
-	})
+	}); err != nil {
+		return err
+	}
+	s.State.LogActivity(s.RepoPair, "issue", state.RadicleToForgejo, ri.Title)
+	return nil
 }
 
 func hashText(parts ...string) string {

@@ -6,17 +6,20 @@ package main
 import (
 	"flag"
 	"log/slog"
+	"net/http"
 	"os"
 	"time"
 
 	"graft/internal/config"
 	"graft/internal/state"
+	"graft/internal/status"
 	"graft/internal/sync"
 )
 
 func main() {
 	configPath := flag.String("config", "/etc/graft/config.yaml", "path to config.yaml")
 	once := flag.Bool("once", false, "run a single pass and exit, instead of looping")
+	listen := flag.String("listen", ":8090", "address to serve /healthz and / (status) on; empty disables it")
 	flag.Parse()
 
 	log := slog.New(slog.NewJSONHandler(os.Stdout, nil))
@@ -49,10 +52,20 @@ func main() {
 		syncers = append(syncers, rs)
 	}
 
+	tracker := status.NewTracker(st)
 	runAll := func() {
 		for _, rs := range syncers {
-			rs.Run(log)
+			gitErr, issuesErr, patchErr := rs.Run(log)
+			tracker.Record(rs.Name(), gitErr, issuesErr, patchErr)
 		}
+	}
+
+	if *listen != "" {
+		go func() {
+			if err := http.ListenAndServe(*listen, tracker.Handler()); err != nil {
+				log.Error("status server stopped", "err", err)
+			}
+		}()
 	}
 
 	runAll()

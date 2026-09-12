@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"regexp"
 	"time"
 )
 
@@ -100,18 +101,24 @@ func (c *Client) ListIssues() ([]Issue, error) {
 	return issues, nil
 }
 
+// issueIDRe matches the "Issue   <id>" line in rad's non-quiet issue-open
+// output box. --quiet was tried first and rejected: it suppresses the id
+// entirely (verified against a live node), printing only the sync summary,
+// which silently corrupted the stored mapping and caused every issue to be
+// re-mirrored on each pass.
+var issueIDRe = regexp.MustCompile(`Issue\s+([0-9a-f]{40})`)
+
 // OpenIssue creates a new issue via the CLI (no write API exists on httpd).
 func (c *Client) OpenIssue(title, description string) (string, error) {
-	out, err := c.rad("issue", "open", "-t", title, "-d", description, "--quiet")
+	out, err := c.rad("issue", "open", "-t", title, "-d", description)
 	if err != nil {
 		return "", err
 	}
-	// --quiet still prints the new issue id on its own line.
-	id := trimLastLine(out)
-	if id == "" {
+	m := issueIDRe.FindStringSubmatch(out)
+	if m == nil {
 		return "", fmt.Errorf("rad issue open: could not parse issue id from output: %q", out)
 	}
-	return id, nil
+	return m[1], nil
 }
 
 // PatchState mirrors radicle-httpd's patch state object.
@@ -139,16 +146,4 @@ func (c *Client) ListPatches() ([]Patch, error) {
 		return nil, err
 	}
 	return patches, nil
-}
-
-func trimLastLine(s string) string {
-	start := len(s)
-	for start > 0 && s[start-1] == '\n' {
-		start--
-	}
-	end := start
-	for start > 0 && s[start-1] != '\n' {
-		start--
-	}
-	return s[start:end]
 }
