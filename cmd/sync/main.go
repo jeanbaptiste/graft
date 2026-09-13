@@ -151,7 +151,7 @@ func main() {
 		mux.Handle("/", tracker.Handler())
 
 		go func() {
-			if err := http.ListenAndServe(*listen, mux); err != nil {
+			if err := http.ListenAndServe(*listen, securityHeaders(mux)); err != nil {
 				log.Error("status server stopped", "err", err)
 			}
 		}()
@@ -244,6 +244,35 @@ func detectAuthorizedIntegrations(pairsBySeries map[string][]*sync.RepoSyncer, l
 			}
 		}
 	}
+}
+
+// securityHeaders sets a fixed, unconditional set of hardening response
+// headers on every request. Deliberately just static assignments — no
+// per-request logic, nothing that can panic or branch incorrectly — since
+// this wraps every route graft serves (dashboard, /social, ActivityPub,
+// /inbox) and a bug here would affect all of them at once.
+//
+// CSP is intentionally left out: the dashboard's entire stylesheet is one
+// inline <style> block, which a naive CSP would break outright (style-src
+// blocks inline styles by default) without a nonce wired through every
+// template render — worth doing properly later, not as a blanket header.
+// Cross-Origin-Embedder-Policy is left out too: it exists to protect
+// cross-origin-isolated contexts (SharedArrayBuffer, WASM threads) that
+// graft has no use for, and would only be a trap for a future contributor
+// who adds an external resource without thinking to CORS-enable it.
+func securityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("X-Frame-Options", "DENY")
+		h.Set("Referrer-Policy", "strict-origin-when-cross-origin")
+		h.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=(), interest-cohort=()")
+		h.Set("Cross-Origin-Opener-Policy", "same-origin")
+		// 180 days, no includeSubDomains (f1/f2/radicle aren't verified
+		// all-HTTPS as a unit) and no preload (effectively irreversible).
+		h.Set("Strict-Transport-Security", "max-age=15552000")
+		next.ServeHTTP(w, r)
+	})
 }
 
 func lastSlash(s string) int {
