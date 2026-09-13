@@ -1,6 +1,6 @@
 # graft
 
-A daemon that mirrors repositories between Forgejo and Radicle: git content, issues, and pull requests / patches.
+A daemon and web-UI that mirrors repositories between Forgejo instances. Also connect to Radicle, Activity Pub and ATProto: git content, issues, comments and pull requests / patches.
 
 It runs on a timer, keeps state in a local SQLite file, and never force-pushes. Real divergences between the two sides are reported and left for humans to resolve.
 
