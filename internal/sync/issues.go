@@ -36,9 +36,13 @@ func (s *IssueSyncer) Sync() error {
 	if err != nil {
 		return fmt.Errorf("list radicle issues: %w", err)
 	}
+	radicleByID := make(map[string]radicle.Issue, len(radicleIssues))
+	for _, ri := range radicleIssues {
+		radicleByID[ri.ID] = ri
+	}
 
 	for _, fi := range forgejoIssues {
-		if err := s.mirrorForgejoToRadicle(fi); err != nil {
+		if err := s.mirrorForgejoToRadicle(fi, radicleByID); err != nil {
 			return fmt.Errorf("mirror forgejo issue #%d: %w", fi.Index, err)
 		}
 	}
@@ -50,12 +54,17 @@ func (s *IssueSyncer) Sync() error {
 	return nil
 }
 
-func (s *IssueSyncer) mirrorForgejoToRadicle(fi forgejo.Issue) error {
+func (s *IssueSyncer) mirrorForgejoToRadicle(fi forgejo.Issue, radicleByID map[string]radicle.Issue) error {
 	existing, err := s.State.FindByForgejoID(s.RepoPair, "issue", fi.Index)
 	if err != nil {
 		return err
 	}
 	if existing != nil {
+		if ri, ok := radicleByID[existing.RadicleID]; ok {
+			if err := s.syncIssueComments(fi.Index, ri); err != nil {
+				return fmt.Errorf("sync comments: %w", err)
+			}
+		}
 		return nil // already mirrored; edits not yet synced (see package doc)
 	}
 

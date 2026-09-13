@@ -155,6 +155,36 @@ CREATE TABLE IF NOT EXISTS dynamic_repo (
 	created_at            TEXT NOT NULL,
 	materialized          INTEGER NOT NULL DEFAULT 0
 );
+
+-- Dedupes comment mirroring across Forgejo and Radicle: a comment body's
+-- hash, once mirrored (or recognized as already present on both sides),
+-- is recorded here so a later pass never re-posts it back the other way.
+-- item_id is the Radicle-side issue/patch id, stable per repo_pair+kind
+-- regardless of which Forgejo peer in a federation is being scanned.
+CREATE TABLE IF NOT EXISTS comment_seen (
+	repo_pair TEXT NOT NULL,
+	kind      TEXT NOT NULL, -- 'issue' or 'patch'
+	item_id   TEXT NOT NULL, -- radicle issue/patch id
+	hash      TEXT NOT NULL,
+	PRIMARY KEY (repo_pair, kind, item_id, hash)
+);
+
+-- One row per Bluesky post graft has made, so an inbound reply's parent
+-- URI can be traced back to the activity_log entry (and from there, the
+-- underlying Forgejo/Radicle item) it was posted about.
+CREATE TABLE IF NOT EXISTS atproto_post (
+	uri         TEXT PRIMARY KEY,
+	activity_id INTEGER NOT NULL,
+	series      TEXT NOT NULL,
+	created_at  TEXT NOT NULL
+);
+
+-- How far AT Proto notification polling has gotten for each series'
+-- Bluesky account, so a restart doesn't re-process old replies.
+CREATE TABLE IF NOT EXISTS atproto_cursor (
+	series TEXT PRIMARY KEY,
+	cursor TEXT NOT NULL DEFAULT ''
+);
 `)
 	if err != nil {
 		return err
@@ -168,6 +198,7 @@ CREATE TABLE IF NOT EXISTS dynamic_repo (
 		`ALTER TABLE activity_log ADD COLUMN series_url TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE activity_log ADD COLUMN forgejo_id INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE activity_log ADD COLUMN radicle_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE activity_log ADD COLUMN origin TEXT NOT NULL DEFAULT ''`,
 	} {
 		if _, err := db.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			return err
@@ -261,6 +292,11 @@ type Activity struct {
 	// this sync; "" if none is known.
 	ForgejoID int64  // issue/PR number on Forgejo, for kind "issue"/"patch"; 0 for "git"
 	RadicleID string // issue/patch id on Radicle, for kind "issue"/"patch"; "" for "git"
+	// Origin names where a "comment" kind entry actually happened —
+	// "forgejo", "radicle", "activitypub", or "atproto". Empty for every
+	// other kind. Display-only: shown in the dashboard tooltip, never
+	// drives a cell's color (see status.event.Origin).
+	Origin string
 }
 
 // Direction values for Activity.Direction, kept as constants so callers
@@ -271,14 +307,19 @@ const (
 	RadicleToForgejo = "radicle_to_forgejo"
 )
 
-// LogActivity records one Activity. Call it once per commit/issue/patch,
-// not once per sync pass.
-func (s *Store) LogActivity(a Activity) error {
-	_, err := s.db.Exec(`
-INSERT INTO activity_log (repo_pair, kind, direction, summary, url, series, series_url, forgejo_id, radicle_id, occurred_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-`, a.RepoPair, a.Kind, a.Direction, a.Summary, a.URL, a.Series, a.SeriesURL, a.ForgejoID, a.RadicleID, time.Now().UTC().Format(time.RFC3339))
-	return err
+// LogActivity records one Activity and returns its new row id — used by
+// the Bluesky bridge to link a posted note back to what it was about, so
+// a later reply can be traced to the right item. Call it once per
+// commit/issue/patch/comment, not once per sync pass.
+func (s *Store) LogActivity(a Activity) (int64, error) {
+	res, err := s.db.Exec(`
+INSERT INTO activity_log (repo_pair, kind, direction, summary, url, series, series_url, forgejo_id, radicle_id, origin, occurred_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`, a.RepoPair, a.Kind, a.Direction, a.Summary, a.URL, a.Series, a.SeriesURL, a.ForgejoID, a.RadicleID, a.Origin, time.Now().UTC().Format(time.RFC3339))
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
 }
 
 // ActivityEntry is one row of activity_log.
@@ -291,7 +332,7 @@ type ActivityEntry struct {
 // ActivitySince returns every activity entry at or after since, newest first.
 func (s *Store) ActivitySince(since time.Time) ([]ActivityEntry, error) {
 	rows, err := s.db.Query(`
-SELECT id, repo_pair, kind, direction, summary, url, series, series_url, forgejo_id, radicle_id, occurred_at FROM activity_log
+SELECT id, repo_pair, kind, direction, summary, url, series, series_url, forgejo_id, radicle_id, origin, occurred_at FROM activity_log
 WHERE occurred_at >= ?
 ORDER BY occurred_at DESC
 `, since.UTC().Format(time.RFC3339))
@@ -306,7 +347,7 @@ ORDER BY occurred_at DESC
 // ActivityPub outbox.
 func (s *Store) ActivityForSeries(series string, limit int) ([]ActivityEntry, error) {
 	rows, err := s.db.Query(`
-SELECT id, repo_pair, kind, direction, summary, url, series, series_url, forgejo_id, radicle_id, occurred_at FROM activity_log
+SELECT id, repo_pair, kind, direction, summary, url, series, series_url, forgejo_id, radicle_id, origin, occurred_at FROM activity_log
 WHERE series = ?
 ORDER BY occurred_at DESC
 LIMIT ?
@@ -322,12 +363,12 @@ LIMIT ?
 // item it describes.
 func (s *Store) ActivityByID(id int64) (*ActivityEntry, error) {
 	row := s.db.QueryRow(`
-SELECT id, repo_pair, kind, direction, summary, url, series, series_url, forgejo_id, radicle_id, occurred_at FROM activity_log
+SELECT id, repo_pair, kind, direction, summary, url, series, series_url, forgejo_id, radicle_id, origin, occurred_at FROM activity_log
 WHERE id = ?
 `, id)
 	var e ActivityEntry
 	var occurredAt string
-	err := row.Scan(&e.ID, &e.RepoPair, &e.Kind, &e.Direction, &e.Summary, &e.URL, &e.Series, &e.SeriesURL, &e.ForgejoID, &e.RadicleID, &occurredAt)
+	err := row.Scan(&e.ID, &e.RepoPair, &e.Kind, &e.Direction, &e.Summary, &e.URL, &e.Series, &e.SeriesURL, &e.ForgejoID, &e.RadicleID, &e.Origin, &occurredAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -347,7 +388,7 @@ func scanActivityRows(rows *sql.Rows) ([]ActivityEntry, error) {
 	for rows.Next() {
 		var e ActivityEntry
 		var occurredAt string
-		if err := rows.Scan(&e.ID, &e.RepoPair, &e.Kind, &e.Direction, &e.Summary, &e.URL, &e.Series, &e.SeriesURL, &e.ForgejoID, &e.RadicleID, &occurredAt); err != nil {
+		if err := rows.Scan(&e.ID, &e.RepoPair, &e.Kind, &e.Direction, &e.Summary, &e.URL, &e.Series, &e.SeriesURL, &e.ForgejoID, &e.RadicleID, &e.Origin, &occurredAt); err != nil {
 			return nil, err
 		}
 		var err error
@@ -484,7 +525,7 @@ ON CONFLICT (series) DO UPDATE SET last_delivered_id = excluded.last_delivered_i
 // id > afterID, oldest first — the delivery order for ActivityPub.
 func (s *Store) NewActivityForSeries(series string, afterID int64) ([]ActivityEntry, error) {
 	rows, err := s.db.Query(`
-SELECT id, repo_pair, kind, direction, summary, url, series, series_url, forgejo_id, radicle_id, occurred_at FROM activity_log
+SELECT id, repo_pair, kind, direction, summary, url, series, series_url, forgejo_id, radicle_id, origin, occurred_at FROM activity_log
 WHERE series = ? AND id > ?
 ORDER BY id ASC
 `, series, afterID)
@@ -676,4 +717,66 @@ func boolToInt(b bool) int {
 		return 1
 	}
 	return 0
+}
+
+// CommentSeen reports whether a comment body's hash has already been
+// dealt with (mirrored, or recognized as already present on both sides)
+// for one item, so a comment sync pass never re-posts the same content
+// back and forth between Forgejo and Radicle.
+func (s *Store) CommentSeen(repoPair, kind, itemID, hash string) (bool, error) {
+	row := s.db.QueryRow(`SELECT 1 FROM comment_seen WHERE repo_pair = ? AND kind = ? AND item_id = ? AND hash = ?`, repoPair, kind, itemID, hash)
+	var one int
+	err := row.Scan(&one)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+// MarkCommentSeen records a comment body's hash as dealt with.
+func (s *Store) MarkCommentSeen(repoPair, kind, itemID, hash string) error {
+	_, err := s.db.Exec(`INSERT OR IGNORE INTO comment_seen (repo_pair, kind, item_id, hash) VALUES (?, ?, ?, ?)`, repoPair, kind, itemID, hash)
+	return err
+}
+
+// SaveATProtoPost records a Bluesky post graft made, so a later reply's
+// parent URI can be traced back to the activity_log entry it was about.
+func (s *Store) SaveATProtoPost(uri string, activityID int64, series string) error {
+	_, err := s.db.Exec(`INSERT OR IGNORE INTO atproto_post (uri, activity_id, series, created_at) VALUES (?, ?, ?, ?)`,
+		uri, activityID, series, time.Now().UTC().Format(time.RFC3339))
+	return err
+}
+
+// ATProtoPostActivity looks up which activity_log entry a Bluesky post
+// URI was about, for resolving an inbound reply back to the underlying
+// Forgejo/Radicle item.
+func (s *Store) ATProtoPostActivity(uri string) (int64, bool, error) {
+	row := s.db.QueryRow(`SELECT activity_id FROM atproto_post WHERE uri = ?`, uri)
+	var id int64
+	err := row.Scan(&id)
+	if err == sql.ErrNoRows {
+		return 0, false, nil
+	}
+	return id, err == nil, err
+}
+
+// ATProtoCursor returns how far notification polling has gotten for a
+// series' Bluesky account ("" if never polled).
+func (s *Store) ATProtoCursor(series string) (string, error) {
+	row := s.db.QueryRow(`SELECT cursor FROM atproto_cursor WHERE series = ?`, series)
+	var c string
+	err := row.Scan(&c)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	return c, err
+}
+
+// SetATProtoCursor records how far notification polling has gotten.
+func (s *Store) SetATProtoCursor(series, cursor string) error {
+	_, err := s.db.Exec(`
+INSERT INTO atproto_cursor (series, cursor) VALUES (?, ?)
+ON CONFLICT (series) DO UPDATE SET cursor = excluded.cursor
+`, series, cursor)
+	return err
 }

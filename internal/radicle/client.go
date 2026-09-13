@@ -86,16 +86,28 @@ type IssueState struct {
 	Status string `json:"status"` // "open" or "closed"
 }
 
+// DiscussionItem is one entry in an issue's or patch revision's
+// discussion array — verified against GET /api/v1/repos/:rid/issues on a
+// live node: discussion[0] is always the issue's own opening description
+// (its id equals the issue's own id), every entry after that is a real
+// comment. replyTo is a comment id or null; not currently used, kept for
+// when threaded display is worth building.
+type DiscussionItem struct {
+	ID        string `json:"id"`
+	Author    Actor  `json:"author"`
+	Body      string `json:"body"`
+	Timestamp int64  `json:"timestamp"` // unix seconds
+	ReplyTo   string `json:"replyTo"`
+}
+
 // Issue is the subset of radicle-httpd's issue JSON the daemon needs.
 // Verified against GET /api/v1/repos/:rid/issues?status=all on httpd 0.28.0.
 type Issue struct {
-	ID         string     `json:"id"`
-	Title      string     `json:"title"`
-	State      IssueState `json:"state"`
-	Author     Actor      `json:"author"`
-	Discussion []struct {
-		Body string `json:"body"`
-	} `json:"discussion"`
+	ID         string           `json:"id"`
+	Title      string           `json:"title"`
+	State      IssueState       `json:"state"`
+	Author     Actor            `json:"author"`
+	Discussion []DiscussionItem `json:"discussion"`
 }
 
 // Body returns the issue's opening comment, if any.
@@ -104,6 +116,15 @@ func (i Issue) Body() string {
 		return ""
 	}
 	return i.Discussion[0].Body
+}
+
+// Comments returns the issue's real comments — everything after the
+// opening description in Discussion.
+func (i Issue) Comments() []DiscussionItem {
+	if len(i.Discussion) <= 1 {
+		return nil
+	}
+	return i.Discussion[1:]
 }
 
 func (c *Client) ListIssues() ([]Issue, error) {
@@ -151,7 +172,25 @@ type Patch struct {
 		Description string `json:"description"`
 		OID         string `json:"oid"`  // head commit of the revision
 		Base        string `json:"base"` // commit the patch is based on
+		// Discussion follows the same shape as an issue's, by analogy
+		// with radicle-httpd's issue endpoint — NOT independently
+		// verified against a live node the way the issue schema above
+		// is (no patch with comments existed to test against at the
+		// time this was written). Comment sync degrades to "no radicle
+		// comments seen" rather than erroring if this turns out wrong;
+		// verify against a real patch before trusting it further.
+		Discussion []DiscussionItem `json:"discussion"`
 	} `json:"revisions"`
+}
+
+// Comments returns a patch's comments, drawn from its first revision —
+// the same scoping CommentPatch already documents (a patch's own id
+// equals its first revision's id in the common single-revision case).
+func (p Patch) Comments() []DiscussionItem {
+	if len(p.Revisions) == 0 {
+		return nil
+	}
+	return p.Revisions[0].Discussion
 }
 
 func (c *Client) ListPatches() ([]Patch, error) {

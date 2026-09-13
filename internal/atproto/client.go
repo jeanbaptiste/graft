@@ -93,12 +93,13 @@ func (c *Client) Login(handle, appPassword string) error {
 	return nil
 }
 
-// Post publishes a short text-only post via com.atproto.repo.createRecord.
-// text is truncated to maxPostRunes if needed. Login must have succeeded
-// first.
-func (c *Client) Post(text string) error {
+// Post publishes a short text-only post via com.atproto.repo.createRecord
+// and returns its AT-URI (at://did/app.bsky.feed.post/rkey) — needed to
+// later recognize a reply whose parent points back at it. text is
+// truncated to maxPostRunes if needed. Login must have succeeded first.
+func (c *Client) Post(text string) (uri string, err error) {
 	if c.accessJWT == "" {
-		return fmt.Errorf("not logged in")
+		return "", fmt.Errorf("not logged in")
 	}
 	if utf8.RuneCountInString(text) > maxPostRunes {
 		r := []rune(text)
@@ -116,23 +117,83 @@ func (c *Client) Post(text string) error {
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
-		return err
+		return "", err
 	}
 	req, err := http.NewRequest(http.MethodPost, c.pdsHost+"/xrpc/com.atproto.repo.createRecord", bytes.NewReader(body))
 	if err != nil {
-		return err
+		return "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+c.accessJWT)
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return fmt.Errorf("create record: %w", err)
+		return "", fmt.Errorf("create record: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseBody))
-		return fmt.Errorf("create record: HTTP %d: %s", resp.StatusCode, truncate(b))
+		return "", fmt.Errorf("create record: HTTP %d: %s", resp.StatusCode, truncate(b))
 	}
-	return nil
+	var out struct {
+		URI string `json:"uri"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseBody)).Decode(&out); err != nil {
+		return "", fmt.Errorf("decode create record response: %w", err)
+	}
+	return out.URI, nil
+}
+
+// Notification is the subset of app.bsky.notification.listNotifications'
+// response this client reads. NOT verified against a live PDS — no
+// Bluesky account was available to test against when this was written;
+// built directly from AT Proto's published lexicon
+// (app.bsky.notification.listNotifications / app.bsky.feed.post), which
+// is a stable, documented public API, but that is not the same as having
+// exercised it. Verify against a real reply before trusting this deeply.
+type Notification struct {
+	URI    string `json:"uri"`
+	Reason string `json:"reason"` // "reply", "like", "repost", "mention", "quote", "follow"
+	Author struct {
+		Handle string `json:"handle"`
+	} `json:"author"`
+	IndexedAt string `json:"indexedAt"`
+	Record    struct {
+		Text  string `json:"text"`
+		Reply *struct {
+			Parent struct {
+				URI string `json:"uri"`
+			} `json:"parent"`
+		} `json:"reply"`
+	} `json:"record"`
+}
+
+// ListNotifications fetches one page of notifications, newest first.
+// Login must have succeeded first.
+func (c *Client) ListNotifications() ([]Notification, error) {
+	if c.accessJWT == "" {
+		return nil, fmt.Errorf("not logged in")
+	}
+	req, err := http.NewRequest(http.MethodGet, c.pdsHost+"/xrpc/app.bsky.notification.listNotifications", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.accessJWT)
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("list notifications: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseBody))
+		return nil, fmt.Errorf("list notifications: HTTP %d: %s", resp.StatusCode, truncate(b))
+	}
+	var out struct {
+		Notifications []Notification `json:"notifications"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseBody)).Decode(&out); err != nil {
+		return nil, fmt.Errorf("decode notifications: %w", err)
+	}
+	return out.Notifications, nil
 }

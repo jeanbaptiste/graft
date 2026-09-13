@@ -172,6 +172,25 @@ func (c *Client) CreateIssueComment(index int64, body string) error {
 	return c.do(http.MethodPost, path, req, nil)
 }
 
+// Comment is the subset of Forgejo's issue-comment object the daemon
+// reads. Verified against a live GET on f2.
+type Comment struct {
+	ID        int64  `json:"id"`
+	Body      string `json:"body"`
+	CreatedAt string `json:"created_at"`
+}
+
+// ListIssueComments lists every comment on an issue or pull request —
+// same issues-endpoint-for-PRs-too caveat as CreateIssueComment.
+func (c *Client) ListIssueComments(index int64) ([]Comment, error) {
+	var comments []Comment
+	path := fmt.Sprintf("/repos/%s/%s/issues/%d/comments", c.owner, c.repo, index)
+	if err := c.do(http.MethodGet, path, nil, &comments); err != nil {
+		return nil, err
+	}
+	return comments, nil
+}
+
 // contentEntry is the subset of Forgejo's contents API response this
 // client reads, shared by both directory listings and single-file fetches.
 type contentEntry struct {

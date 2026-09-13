@@ -292,7 +292,7 @@ func (g *GitSyncer) logMirroredCommits(oldHead, direction, to string) {
 				url = g.ForgejoWebURL + "/commit/" + full
 			}
 		}
-		g.State.LogActivity(state.Activity{
+		id, _ := g.State.LogActivity(state.Activity{
 			RepoPair: g.RepoPair, Series: g.Series, SeriesURL: g.SeriesURL,
 			Kind: "git", Direction: direction, Summary: summary, URL: url,
 		})
@@ -303,6 +303,8 @@ func (g *GitSyncer) logMirroredCommits(oldHead, direction, to string) {
 		if url != "" {
 			text += "\n" + url
 		}
-		g.Bluesky.Post(text)
+		if postURI, err := g.Bluesky.Post(text); err == nil && postURI != "" {
+			g.State.SaveATProtoPost(postURI, id, g.Series)
+		}
 	}
 }

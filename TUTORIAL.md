@@ -204,6 +204,16 @@ rad seed rad:z3gqcJUoA1n9HaHKufZs5FCSGazv5
 
 `rad node connect` is the first handshake — Radicle's peer discovery (`"peers": {"type": "dynamic"}` in `~/.radicle/config.json`) spreads pairs it already knows, but a never-connected node needs one explicit introduction. `rad seed` is separate: default seeding policy replicates nothing not explicitly told to. Skip either step and the node stays unreachable or empty.
 
+## Comments
+
+`graft` mirrors comments on issues and patches, both directions, from four origins:
+
+- **Forgejo → Radicle** and **Radicle → Forgejo**: native comments, polled and cross-mirrored each pass. Dedup is by content hash (`comment_seen` table) plus a `**via Forgejo:**` / `**via Radicle:**` prefix on the mirrored copy, so a mirrored comment is never mirrored back.
+- **ActivityPub**: a Mastodon reply to one of graft's posts becomes a comment, prefixed `**via Fediverse, @user:**`.
+- **AT Proto**: a Bluesky reply, same mechanism, prefixed `**via Bluesky, @handle:**`. Not verified against a live account — built from AT Proto's published lexicon (`app.bsky.notification.listNotifications`), but no Bluesky account existed to test against when this was written.
+
+Dashboard cells are colored by kind only (commit, issue, patch, comment) — never by origin. Origin shows up as a tooltip note only, on hover.
+
 ## Troubleshooting
 
 **"token does not have at least one of required scope(s)"** — the Forgejo token is missing `write:issue` or `write:repository`. Regenerate it with both.

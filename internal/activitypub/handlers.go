@@ -316,7 +316,29 @@ func (h *Handler) handleReply(series string, remoteActor *Actor, note inboxNote)
 
 	if err := h.postComment(e.RepoPair, e.Kind, e.ForgejoID, e.RadicleID, body); err != nil {
 		h.log.Error("ap reply: post comment", "series", series, "repo_pair", e.RepoPair, "err", err)
+		return
 	}
+	if _, err := h.store.LogActivity(state.Activity{
+		RepoPair: e.RepoPair, Series: e.Series, SeriesURL: e.SeriesURL,
+		Kind: "comment", Direction: e.Direction, Origin: "activitypub",
+		Summary:   truncateSummary(note.Content),
+		URL:       e.URL,
+		ForgejoID: e.ForgejoID, RadicleID: e.RadicleID,
+	}); err != nil {
+		h.log.Error("ap reply: log activity", "series", series, "repo_pair", e.RepoPair, "err", err)
+	}
+}
+
+// truncateSummary bounds how much of a fediverse reply's raw HTML content
+// lands in the dashboard's summary column.
+func truncateSummary(s string) string {
+	s = stripHTML(s)
+	const max = 200
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	return string(r[:max-1]) + "…"
 }
 
 // sendAccept replies to a Follow with a signed Accept, embedding the

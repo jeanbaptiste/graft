@@ -323,14 +323,40 @@ type subRow struct {
 // normal commit/issue/patch cell, just in a different color, with the
 // tooltip naming where it actually happened.
 type event struct {
-	Kind        string // "git", "issue", "patch" — drives the cell's color when State is unset
-	Label       string // "Commit", "Issue", "Patch"
-	Text        string
-	URL         string
-	Server      string // which mirrored side this happened on, e.g. "f1", "alice"
-	When        string // human-readable timestamp, for the tooltip
-	State       string // "" for a real event; "source" or "replicated" for a synthetic one — drives the cell's color instead of Kind
+	Kind   string // "git", "issue", "patch", "comment" — always drives the cell's color
+	Label  string // "Commit", "Issue", "Patch", "Comment"
+	Text   string
+	URL    string
+	Server string // which mirrored side this happened on, e.g. "f1", "alice"
+	When   string // human-readable timestamp, for the tooltip
+	// State and OriginLabel exist only for a synthetic cell — one
+	// standing in for content a side plainly holds without graft having
+	// logged a push there directly (see buildSeriesRows). Never drives
+	// the cell's color (Kind always does); surfaces only as a tooltip
+	// note explaining why this side has no event of its own.
+	State       string // "" for a real event; "source" or "replicated" for a synthetic one
 	OriginLabel string // for a synthetic cell, the sub-row label the real event was actually logged on
+	// Origin is set on a real "comment" kind event: where it actually
+	// happened — "Forgejo", "Radicle", "Fediverse (ActivityPub)", or
+	// "Bluesky (AT Proto)". Tooltip note only, same as State/OriginLabel.
+	Origin string
+}
+
+// originLabel turns a stored activity_log.origin value into display
+// text for the tooltip.
+func originLabel(origin string) string {
+	switch origin {
+	case "forgejo":
+		return "Forgejo"
+	case "radicle":
+		return "Radicle"
+	case "activitypub":
+		return "Fediverse (ActivityPub)"
+	case "atproto":
+		return "Bluesky (AT Proto)"
+	default:
+		return ""
+	}
 }
 
 type commitLine struct {
@@ -551,6 +577,7 @@ func toEvents(es []state.ActivityEntry) []event {
 			URL:    e.URL,
 			Server: server,
 			When:   e.OccurredAt.Format("Mon, Jan 2, 15:04"),
+			Origin: originLabel(e.Origin),
 		})
 	}
 	return out
@@ -564,6 +591,8 @@ func kindLabel(kind string) string {
 		return "Issue"
 	case "patch":
 		return "Patch"
+	case "comment":
+		return "Comment"
 	default:
 		return kind
 	}
@@ -688,8 +717,7 @@ var dashboardTmpl = template.Must(template.New("dashboard").Parse(`<!doctype htm
     --kind-git:     #0052cc;
     --kind-issue:   #00875a;
     --kind-patch:   #6554c0;
-    --kind-source:     #ff991f;
-    --kind-replicated: #00b8d9;
+    --kind-comment: #ff991f;
     --bad:          #de350b;
     --good:         #36b37e;
   }
@@ -734,8 +762,7 @@ var dashboardTmpl = template.Must(template.New("dashboard").Parse(`<!doctype htm
   .legend .sw[data-kind="git"] { background: var(--kind-git); }
   .legend .sw[data-kind="issue"] { background: var(--kind-issue); }
   .legend .sw[data-kind="patch"] { background: var(--kind-patch); }
-  .legend .sw[data-kind="source"] { background: var(--kind-source); }
-  .legend .sw[data-kind="replicated"] { background: var(--kind-replicated); }
+  .legend .sw[data-kind="comment"] { background: var(--kind-comment); }
   .heatmap { display: flex; flex-direction: column; gap: .15rem; }
   .series-group { border-bottom: 1px solid var(--border); }
   .series-group:last-child { border-bottom: none; }
@@ -770,8 +797,7 @@ var dashboardTmpl = template.Must(template.New("dashboard").Parse(`<!doctype htm
   .cell[data-kind="git"] { background: var(--kind-git); }
   .cell[data-kind="issue"] { background: var(--kind-issue); }
   .cell[data-kind="patch"] { background: var(--kind-patch); }
-  .cell[data-kind="source"] { background: var(--kind-source); }
-  .cell[data-kind="replicated"] { background: var(--kind-replicated); }
+  .cell[data-kind="comment"] { background: var(--kind-comment); }
 
   .tip {
     display: none; position: absolute; top: calc(100% + 8px); left: 50%; transform: translateX(-50%);
@@ -842,8 +868,7 @@ var dashboardTmpl = template.Must(template.New("dashboard").Parse(`<!doctype htm
         <span><i class="sw" data-kind="git"></i>Commit</span>
         <span><i class="sw" data-kind="issue"></i>Issue</span>
         <span><i class="sw" data-kind="patch"></i>Patch</span>
-        <span><i class="sw" data-kind="source"></i>Source</span>
-        <span><i class="sw" data-kind="replicated"></i>Replicated</span>
+        <span><i class="sw" data-kind="comment"></i>Comment</span>
       </div>
       <div class="fed-actions">
         <a class="btn-outline" href="/add-peer">+ Add peer</a>
@@ -868,18 +893,21 @@ var dashboardTmpl = template.Must(template.New("dashboard").Parse(`<!doctype htm
             {{end}}
             <div class="days">
             {{range .Events}}
-              <div class="cell" data-kind="{{if .State}}{{.State}}{{else}}{{.Kind}}{{end}}">
+              <div class="cell" data-kind="{{.Kind}}">
                 <div class="tip">
                   <div class="tip-date">{{.When}}</div>
                   {{if .URL}}
-                  <a class="tip-row" href="{{.URL}}" target="_blank" rel="noopener"><span class="tip-kind">{{.Label}}{{if eq .State "source"}} · source{{else if eq .State "replicated"}} · replicated{{end}}</span>{{.Text}}</a>
+                  <a class="tip-row" href="{{.URL}}" target="_blank" rel="noopener"><span class="tip-kind">{{.Label}}</span>{{.Text}}</a>
                   {{else}}
-                  <span class="tip-row"><span class="tip-kind">{{.Label}}{{if eq .State "source"}} · source{{else if eq .State "replicated"}} · replicated{{end}}</span>{{.Text}}</span>
+                  <span class="tip-row"><span class="tip-kind">{{.Label}}</span>{{.Text}}</span>
                   {{end}}
                   {{if eq .State "source"}}
-                  <div class="tip-note">origin of this content — graft mirrored it out from here, via {{.OriginLabel}}</div>
+                  <div class="tip-note">origin of this content — mirrored out from here, via {{.OriginLabel}}</div>
                   {{else if eq .State "replicated"}}
                   <div class="tip-note">replicated here without a graft-logged push — originally pushed via {{.OriginLabel}}, {{.When}}</div>
+                  {{end}}
+                  {{if .Origin}}
+                  <div class="tip-note">via {{.Origin}}</div>
                   {{end}}
                 </div>
               </div>

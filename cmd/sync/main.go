@@ -147,6 +147,7 @@ func main() {
 		if apHandler != nil {
 			apHandler.DeliverNewActivity()
 		}
+		pollBlueskyReplies(live.pairsSnapshot(), live, st, log)
 	}
 
 	if *listen != "" {

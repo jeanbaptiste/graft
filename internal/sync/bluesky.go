@@ -17,19 +17,21 @@ type BlueskyPoster struct {
 	PDSHost     string
 }
 
-// Post logs in fresh and publishes text. A new session per post is
+// Post logs in fresh and publishes text, returning the new post's AT-URI
+// (used to recognize a later reply to it). A new session per post is
 // wasteful but simple and avoids session-expiry bookkeeping — acceptable
 // given how infrequently a single pair mirrors new content.
-func (b *BlueskyPoster) Post(text string) error {
+func (b *BlueskyPoster) Post(text string) (uri string, err error) {
 	if b == nil {
-		return nil
+		return "", nil
 	}
 	c := atproto.New(b.PDSHost)
 	if err := c.Login(b.Handle, b.AppPassword); err != nil {
-		return fmt.Errorf("bluesky login: %w", err)
+		return "", fmt.Errorf("bluesky login: %w", err)
 	}
-	if err := c.Post(text); err != nil {
-		return fmt.Errorf("bluesky post: %w", err)
+	uri, err = c.Post(text)
+	if err != nil {
+		return "", fmt.Errorf("bluesky post: %w", err)
 	}
-	return nil
+	return uri, nil
 }

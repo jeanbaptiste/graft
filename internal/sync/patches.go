@@ -58,9 +58,13 @@ func (s *PatchSyncer) Sync() error {
 	if err != nil {
 		return fmt.Errorf("list radicle patches: %w", err)
 	}
+	radicleByID := make(map[string]radicle.Patch, len(patches))
+	for _, p := range patches {
+		radicleByID[p.ID] = p
+	}
 
 	for _, pr := range prs {
-		if err := s.mirrorForgejoToRadicle(pr); err != nil {
+		if err := s.mirrorForgejoToRadicle(pr, radicleByID); err != nil {
 			return fmt.Errorf("mirror forgejo PR #%d: %w", pr.Index, err)
 		}
 	}
@@ -74,12 +78,17 @@ func (s *PatchSyncer) Sync() error {
 
 var patchOpenedRe = regexp.MustCompile(`Patch ([0-9a-f]{40}) opened`)
 
-func (s *PatchSyncer) mirrorForgejoToRadicle(pr forgejo.PullRequest) error {
+func (s *PatchSyncer) mirrorForgejoToRadicle(pr forgejo.PullRequest, radicleByID map[string]radicle.Patch) error {
 	existing, err := s.State.FindByForgejoID(s.RepoPair, "patch", pr.Index)
 	if err != nil {
 		return err
 	}
 	if existing != nil {
+		if rp, ok := radicleByID[existing.RadicleID]; ok {
+			if err := s.syncPatchComments(pr.Index, rp); err != nil {
+				return fmt.Errorf("sync comments: %w", err)
+			}
+		}
 		return nil
 	}
 
@@ -122,13 +131,15 @@ func (s *PatchSyncer) mirrorForgejoToRadicle(pr forgejo.PullRequest) error {
 	}); err != nil {
 		return err
 	}
-	s.State.LogActivity(state.Activity{
+	id, _ := s.State.LogActivity(state.Activity{
 		RepoPair: s.RepoPair, Series: s.Series, SeriesURL: s.SeriesURL,
 		Kind: "patch", Direction: state.ForgejoToRadicle, Summary: pr.Title,
 		URL:       s.RadicleWebURL + "/patches/" + m[1],
 		ForgejoID: pr.Index, RadicleID: m[1],
 	})
-	s.Bluesky.Post(s.Series + ": patch opened — " + pr.Title + "\n" + s.RadicleWebURL + "/patches/" + m[1])
+	if uri, err := s.Bluesky.Post(s.Series + ": patch opened — " + pr.Title + "\n" + s.RadicleWebURL + "/patches/" + m[1]); err == nil && uri != "" {
+		s.State.SaveATProtoPost(uri, id, s.Series)
+	}
 	return nil
 }
 
@@ -169,13 +180,15 @@ func (s *PatchSyncer) mirrorRadicleToForgejo(p radicle.Patch) error {
 	}); err != nil {
 		return err
 	}
-	s.State.LogActivity(state.Activity{
+	id, _ := s.State.LogActivity(state.Activity{
 		RepoPair: s.RepoPair, Series: s.Series, SeriesURL: s.SeriesURL,
 		Kind: "patch", Direction: state.RadicleToForgejo, Summary: p.Title,
 		URL:       fmt.Sprintf("%s/pulls/%d", s.ForgejoWebURL, pr.Index),
 		ForgejoID: pr.Index, RadicleID: p.ID,
 	})
-	s.Bluesky.Post(fmt.Sprintf("%s: patch opened — %s\n%s/pulls/%d", s.Series, p.Title, s.ForgejoWebURL, pr.Index))
+	if uri, err := s.Bluesky.Post(fmt.Sprintf("%s: patch opened — %s\n%s/pulls/%d", s.Series, p.Title, s.ForgejoWebURL, pr.Index)); err == nil && uri != "" {
+		s.State.SaveATProtoPost(uri, id, s.Series)
+	}
 	return nil
 }
 
