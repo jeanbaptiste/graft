@@ -185,6 +185,17 @@ CREATE TABLE IF NOT EXISTS atproto_cursor (
 	series TEXT PRIMARY KEY,
 	cursor TEXT NOT NULL DEFAULT ''
 );
+
+-- A submitted "add a Radicle peer" request awaiting admin approval.
+-- Unlike dynamic_repo this never becomes an ongoing sync pair — approval
+-- just runs rad node connect + rad seed once, then the row is gone.
+CREATE TABLE IF NOT EXISTS pending_radicle_peer (
+	id         INTEGER PRIMARY KEY AUTOINCREMENT,
+	series     TEXT NOT NULL,
+	node_id    TEXT NOT NULL,
+	address    TEXT NOT NULL,
+	created_at TEXT NOT NULL
+);
 `)
 	if err != nil {
 		return err
@@ -199,6 +210,7 @@ CREATE TABLE IF NOT EXISTS atproto_cursor (
 		`ALTER TABLE activity_log ADD COLUMN forgejo_id INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE activity_log ADD COLUMN radicle_id TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE activity_log ADD COLUMN origin TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE dynamic_repo ADD COLUMN approved INTEGER NOT NULL DEFAULT 0`,
 	} {
 		if _, err := db.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			return err
@@ -628,18 +640,20 @@ type DynamicRepo struct {
 	SyncIssues         bool
 	SyncPatches        bool
 	Materialized       bool
+	Approved           bool
 }
 
-// CreateDynamicRepo inserts a newly-submitted repo pair, active as soon
-// as the next sync pass picks it up. Fails if the name is already taken —
-// the same uniqueness graft would need across config.yaml pairs anyway.
+// CreateDynamicRepo inserts a newly-submitted repo pair as an unapproved
+// request — it never joins the sync loop until ApproveDynamicRepo is
+// called. Fails if the name is already taken — the same uniqueness
+// graft would need across config.yaml pairs anyway.
 func (s *Store) CreateDynamicRepo(r DynamicRepo) (int64, error) {
 	res, err := s.db.Exec(`
 INSERT INTO dynamic_repo (
 	name, series, forgejo_base_url, forgejo_owner, forgejo_repo, forgejo_token_file,
 	radicle_rid, radicle_http_base_url, radicle_explorer_url, radicle_rad_home,
-	sync_git, sync_issues, sync_patches, created_at, materialized
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+	sync_git, sync_issues, sync_patches, created_at, materialized, approved
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)
 `, r.Name, r.Series, r.ForgejoBaseURL, r.ForgejoOwner, r.ForgejoRepo, r.ForgejoTokenFile,
 		r.RadicleRID, r.RadicleHTTPBaseURL, r.RadicleExplorerURL, r.RadicleRadHome,
 		boolToInt(r.SyncGit), boolToInt(r.SyncIssues), boolToInt(r.SyncPatches), time.Now().UTC().Format(time.RFC3339))
@@ -649,31 +663,71 @@ INSERT INTO dynamic_repo (
 	return res.LastInsertId()
 }
 
-// UnmaterializedDynamicRepos returns every dynamic_repo row the running
-// daemon hasn't yet turned into a live RepoSyncer.
-func (s *Store) UnmaterializedDynamicRepos() ([]DynamicRepo, error) {
-	rows, err := s.db.Query(`
-SELECT id, name, series, forgejo_base_url, forgejo_owner, forgejo_repo, forgejo_token_file,
+const dynamicRepoColumns = `id, name, series, forgejo_base_url, forgejo_owner, forgejo_repo, forgejo_token_file,
 	radicle_rid, radicle_http_base_url, radicle_explorer_url, radicle_rad_home,
-	sync_git, sync_issues, sync_patches
-FROM dynamic_repo WHERE materialized = 0
-`)
-	if err != nil {
-		return nil, err
-	}
+	sync_git, sync_issues, sync_patches, materialized, approved`
+
+func scanDynamicRepoRows(rows *sql.Rows) ([]DynamicRepo, error) {
 	defer rows.Close()
 	var out []DynamicRepo
 	for rows.Next() {
 		var r DynamicRepo
-		var g, i, p int
+		var g, i, p, m, a int
 		if err := rows.Scan(&r.ID, &r.Name, &r.Series, &r.ForgejoBaseURL, &r.ForgejoOwner, &r.ForgejoRepo, &r.ForgejoTokenFile,
-			&r.RadicleRID, &r.RadicleHTTPBaseURL, &r.RadicleExplorerURL, &r.RadicleRadHome, &g, &i, &p); err != nil {
+			&r.RadicleRID, &r.RadicleHTTPBaseURL, &r.RadicleExplorerURL, &r.RadicleRadHome, &g, &i, &p, &m, &a); err != nil {
 			return nil, err
 		}
-		r.SyncGit, r.SyncIssues, r.SyncPatches = g != 0, i != 0, p != 0
+		r.SyncGit, r.SyncIssues, r.SyncPatches, r.Materialized, r.Approved = g != 0, i != 0, p != 0, m != 0, a != 0
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+// PendingDynamicRepos returns every submitted peer/repo request still
+// awaiting admin approval.
+func (s *Store) PendingDynamicRepos() ([]DynamicRepo, error) {
+	rows, err := s.db.Query(`SELECT ` + dynamicRepoColumns + ` FROM dynamic_repo WHERE approved = 0`)
+	if err != nil {
+		return nil, err
+	}
+	return scanDynamicRepoRows(rows)
+}
+
+// GetDynamicRepo looks up one row by id, e.g. to recover its token file
+// path before deleting a rejected request.
+func (s *Store) GetDynamicRepo(id int64) (*DynamicRepo, error) {
+	rows, err := s.db.Query(`SELECT `+dynamicRepoColumns+` FROM dynamic_repo WHERE id = ?`, id)
+	if err != nil {
+		return nil, err
+	}
+	out, err := scanDynamicRepoRows(rows)
+	if err != nil || len(out) == 0 {
+		return nil, err
+	}
+	return &out[0], nil
+}
+
+// ApproveDynamicRepo marks a pending request approved — the next sync
+// pass turns it into a live RepoSyncer (see UnmaterializedDynamicRepos).
+func (s *Store) ApproveDynamicRepo(id int64) error {
+	_, err := s.db.Exec(`UPDATE dynamic_repo SET approved = 1 WHERE id = ?`, id)
+	return err
+}
+
+// RejectDynamicRepo permanently removes a pending request.
+func (s *Store) RejectDynamicRepo(id int64) error {
+	_, err := s.db.Exec(`DELETE FROM dynamic_repo WHERE id = ?`, id)
+	return err
+}
+
+// UnmaterializedDynamicRepos returns every approved dynamic_repo row the
+// running daemon hasn't yet turned into a live RepoSyncer.
+func (s *Store) UnmaterializedDynamicRepos() ([]DynamicRepo, error) {
+	rows, err := s.db.Query(`SELECT ` + dynamicRepoColumns + ` FROM dynamic_repo WHERE approved = 1 AND materialized = 0`)
+	if err != nil {
+		return nil, err
+	}
+	return scanDynamicRepoRows(rows)
 }
 
 // MarkDynamicRepoMaterialized flips a row so it's never re-registered on
@@ -683,33 +737,17 @@ func (s *Store) MarkDynamicRepoMaterialized(id int64) error {
 	return err
 }
 
-// AllDynamicRepos returns every dynamic_repo row regardless of
+// AllDynamicRepos returns every approved dynamic_repo row regardless of
 // materialization state — used at startup to rebuild the full set of
 // live pairs after a restart, since these rows persist across it but
-// config.yaml doesn't know about them.
+// config.yaml doesn't know about them. Never includes a row still
+// awaiting approval.
 func (s *Store) AllDynamicRepos() ([]DynamicRepo, error) {
-	rows, err := s.db.Query(`
-SELECT id, name, series, forgejo_base_url, forgejo_owner, forgejo_repo, forgejo_token_file,
-	radicle_rid, radicle_http_base_url, radicle_explorer_url, radicle_rad_home,
-	sync_git, sync_issues, sync_patches
-FROM dynamic_repo
-`)
+	rows, err := s.db.Query(`SELECT ` + dynamicRepoColumns + ` FROM dynamic_repo WHERE approved = 1`)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	var out []DynamicRepo
-	for rows.Next() {
-		var r DynamicRepo
-		var g, i, p int
-		if err := rows.Scan(&r.ID, &r.Name, &r.Series, &r.ForgejoBaseURL, &r.ForgejoOwner, &r.ForgejoRepo, &r.ForgejoTokenFile,
-			&r.RadicleRID, &r.RadicleHTTPBaseURL, &r.RadicleExplorerURL, &r.RadicleRadHome, &g, &i, &p); err != nil {
-			return nil, err
-		}
-		r.SyncGit, r.SyncIssues, r.SyncPatches = g != 0, i != 0, p != 0
-		out = append(out, r)
-	}
-	return out, rows.Err()
+	return scanDynamicRepoRows(rows)
 }
 
 func boolToInt(b bool) int {
@@ -778,5 +816,63 @@ func (s *Store) SetATProtoCursor(series, cursor string) error {
 INSERT INTO atproto_cursor (series, cursor) VALUES (?, ?)
 ON CONFLICT (series) DO UPDATE SET cursor = excluded.cursor
 `, series, cursor)
+	return err
+}
+
+// PendingRadiclePeer is one submitted "add a Radicle peer" request
+// awaiting admin approval.
+type PendingRadiclePeer struct {
+	ID      int64
+	Series  string
+	NodeID  string
+	Address string
+}
+
+// CreatePendingRadiclePeer records a submitted request.
+func (s *Store) CreatePendingRadiclePeer(series, nodeID, address string) (int64, error) {
+	res, err := s.db.Exec(`INSERT INTO pending_radicle_peer (series, node_id, address, created_at) VALUES (?, ?, ?, ?)`,
+		series, nodeID, address, time.Now().UTC().Format(time.RFC3339))
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
+// ListPendingRadiclePeers returns every request awaiting approval.
+func (s *Store) ListPendingRadiclePeers() ([]PendingRadiclePeer, error) {
+	rows, err := s.db.Query(`SELECT id, series, node_id, address FROM pending_radicle_peer`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []PendingRadiclePeer
+	for rows.Next() {
+		var p PendingRadiclePeer
+		if err := rows.Scan(&p.ID, &p.Series, &p.NodeID, &p.Address); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// GetPendingRadiclePeer looks up one request by id.
+func (s *Store) GetPendingRadiclePeer(id int64) (*PendingRadiclePeer, error) {
+	row := s.db.QueryRow(`SELECT id, series, node_id, address FROM pending_radicle_peer WHERE id = ?`, id)
+	var p PendingRadiclePeer
+	err := row.Scan(&p.ID, &p.Series, &p.NodeID, &p.Address)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &p, nil
+}
+
+// DeletePendingRadiclePeer removes a request — called after it's been
+// approved and acted on, or rejected.
+func (s *Store) DeletePendingRadiclePeer(id int64) error {
+	_, err := s.db.Exec(`DELETE FROM pending_radicle_peer WHERE id = ?`, id)
 	return err
 }

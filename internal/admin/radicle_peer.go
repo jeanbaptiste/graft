@@ -55,10 +55,11 @@ var addRadiclePeerTmpl = template.Must(template.New("add-radicle-peer").Parse(`
     <label for="address">Address</label>
     <input type="text" id="address" name="address" required value="{{.Address}}" placeholder="host:8776">
 
-    <label for="password">Admin password</label>
-    <input type="password" id="password" name="password" required autocomplete="off">
+    <label for="password">Admin password (optional)</label>
+    <input type="password" id="password" name="password" autocomplete="off">
+    <div class="hint">Know it? Enter it to connect &amp; seed immediately. Leave it blank to submit for the graft admin to review and approve instead.</div>
 
-    <button type="submit">Connect &amp; seed</button>
+    <button type="submit">Submit</button>
   </form>
 </div>
 <p><a class="nav-link" href="/add-peer">Add a Forgejo peer instead &rarr;</a></p>
@@ -81,8 +82,8 @@ func (h *Handler) renderAddRadiclePeer(w http.ResponseWriter, data map[string]an
 
 func (h *Handler) submitAddRadiclePeer(w http.ResponseWriter, r *http.Request) {
 	ip := clientIP(r)
-	if !h.passwordLimiter.allowed(ip) {
-		h.renderAddRadiclePeer(w, map[string]any{"Series": seriesNames(h.cfg.Series()), "Error": "too many attempts from your address — try again later"})
+	if !h.submitLimiter.allowed(ip) {
+		h.renderAddRadiclePeer(w, map[string]any{"Series": seriesNames(h.cfg.Series()), "Error": "too many submissions from your address — try again later"})
 		return
 	}
 	if err := r.ParseForm(); err != nil {
@@ -96,12 +97,8 @@ func (h *Handler) submitAddRadiclePeer(w http.ResponseWriter, r *http.Request) {
 			"NodeID": form["node_id"], "Address": form["address"],
 		})
 	}
+	h.submitLimiter.recordFailure(ip)
 
-	if !checkPassword(h.cfg, form["password"]) {
-		h.passwordLimiter.recordFailure(ip)
-		retry("wrong admin password")
-		return
-	}
 	series := findSeries(h.cfg.Series(), form["series"])
 	if series == nil {
 		retry("pick a federation to join")
@@ -116,14 +113,28 @@ func (h *Handler) submitAddRadiclePeer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, err := runRad(h.cfg.DefaultRadHome, "node", "connect", form["node_id"]+"@"+form["address"]); err != nil {
-		retry("could not connect to that node: " + err.Error())
-		return
-	}
-	if _, err := runRad(h.cfg.DefaultRadHome, "seed", series.RadicleRID); err != nil {
-		retry("connected, but could not seed the repository: " + err.Error())
+	if form["password"] != "" {
+		if !checkPassword(h.cfg, form["password"]) {
+			h.passwordLimiter.recordFailure(ip)
+			retry("wrong admin password")
+			return
+		}
+		if _, err := runRad(h.cfg.DefaultRadHome, "node", "connect", form["node_id"]+"@"+form["address"]); err != nil {
+			retry("could not connect to that node: " + err.Error())
+			return
+		}
+		if _, err := runRad(h.cfg.DefaultRadHome, "seed", series.RadicleRID); err != nil {
+			retry("connected, but could not seed the repository: " + err.Error())
+			return
+		}
+		render(w, "radicle peer added", "SELF-SERVICE ONBOARDING", renderFragment(onboardOKTmpl, map[string]any{"Title": "Radicle peer added", "Name": form["node_id"], "Approved": true}))
 		return
 	}
 
-	render(w, "radicle peer added", "SELF-SERVICE ONBOARDING", renderFragment(onboardOKTmpl, map[string]string{"Title": "Radicle peer added", "Name": form["node_id"]}))
+	if _, err := h.cfg.Store.CreatePendingRadiclePeer(series.Name, form["node_id"], form["address"]); err != nil {
+		retry("could not save: " + err.Error())
+		return
+	}
+
+	render(w, "radicle peer submitted", "SELF-SERVICE ONBOARDING", renderFragment(onboardOKTmpl, map[string]any{"Title": "Radicle peer submitted", "Name": form["node_id"], "Approved": false}))
 }

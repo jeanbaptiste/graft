@@ -67,17 +67,21 @@ type Config struct {
 	Series func() []SeriesInfo
 }
 
-// Handler serves every admin-facing route. Two independent rate limiters:
-// a wrong admin password and a wrong share passcode are different secrets
-// with different scopes, so a lockout on one never blocks the other.
+// Handler serves every admin-facing route. Three independent rate
+// limiters: a wrong admin password (used only on the /admin/pending
+// review page now), a wrong share passcode, and a plain volume cap on
+// onboarding submissions (which need no password at all — anyone can
+// propose a peer, only an admin approval activates it) are different
+// concerns, so a lockout on one never blocks the others.
 type Handler struct {
 	cfg             Config
 	passwordLimiter *rateLimiter
 	shareLimiter    *rateLimiter
+	submitLimiter   *rateLimiter
 }
 
 func NewHandler(cfg Config) *Handler {
-	return &Handler{cfg: cfg, passwordLimiter: newRateLimiter(), shareLimiter: newRateLimiter()}
+	return &Handler{cfg: cfg, passwordLimiter: newRateLimiter(), shareLimiter: newRateLimiter(), submitLimiter: newRateLimiter()}
 }
 
 func (h *Handler) Register(mux *http.ServeMux) {
@@ -86,6 +90,9 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/add-peer", h.addPeer)
 	mux.HandleFunc("/add-radicle-peer", h.addRadiclePeer)
 	mux.HandleFunc("/new-repo", h.newRepo)
+	mux.HandleFunc("/admin/pending", h.pending)
+	mux.HandleFunc("/admin/pending/approve", h.approvePending)
+	mux.HandleFunc("/admin/pending/reject", h.rejectPending)
 }
 
 // checkPassword compares in constant time, so a wrong guess never takes

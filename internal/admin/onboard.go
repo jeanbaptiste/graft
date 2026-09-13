@@ -48,7 +48,7 @@ var addPeerTmpl = template.Must(template.New("add-peer").Parse(`
 
     <label for="token">Forgejo token</label>
     <textarea id="token" name="token" required placeholder="scoped to write:repository + write:issue"></textarea>
-    <div class="hint">Written to its own chmod-600 file on save. Not kept in this form, not logged. From a third party: use <a href="/share/new">one-time share</a>.</div>
+    <div class="hint">Written to its own chmod-600 file on submit. Not kept in this form, not logged. From a third party: use <a href="/share/new">one-time share</a>.</div>
 
     <label>Sync scope</label>
     <div class="checks">
@@ -57,10 +57,11 @@ var addPeerTmpl = template.Must(template.New("add-peer").Parse(`
       <label><input type="checkbox" name="sync_patches" checked> patches</label>
     </div>
 
-    <label for="password">Admin password</label>
-    <input type="password" id="password" name="password" required autocomplete="off">
+    <label for="password">Admin password (optional)</label>
+    <input type="password" id="password" name="password" autocomplete="off">
+    <div class="hint">Know it? Enter it to go live immediately. Leave it blank to submit for the graft admin to review and approve instead.</div>
 
-    <button type="submit">Add peer</button>
+    <button type="submit">Submit</button>
   </form>
 </div>
 <p><a class="nav-link" href="/add-radicle-peer">Add a Radicle peer instead &rarr;</a></p>
@@ -117,17 +118,22 @@ var newRepoTmpl = template.Must(template.New("new-repo").Parse(`
       <label><input type="checkbox" name="sync_patches" checked> patches</label>
     </div>
 
-    <label for="password">Admin password</label>
-    <input type="password" id="password" name="password" required autocomplete="off">
+    <label for="password">Admin password (optional)</label>
+    <input type="password" id="password" name="password" autocomplete="off">
+    <div class="hint">Know it? Enter it to go live immediately. Leave it blank to submit for the graft admin to review and approve instead.</div>
 
-    <button type="submit">Start mirroring</button>
+    <button type="submit">Submit</button>
   </form>
 </div>
 `))
 
 var onboardOKTmpl = template.Must(template.New("onboard-ok").Parse(`
 <h1>{{.Title}}</h1>
-<div class="notice good">{{.Name}} saved.</div>
+{{if .Approved}}
+<div class="notice good">{{.Name}} is live within one sync interval — no restart.</div>
+{{else}}
+<div class="notice good">{{.Name}} submitted. Waiting on the graft admin to review and approve it.</div>
+{{end}}
 <p><a class="nav-link" href="/">&larr; Back to the dashboard</a></p>
 `))
 
@@ -156,8 +162,8 @@ func (h *Handler) renderAddPeer(w http.ResponseWriter, data map[string]any) {
 
 func (h *Handler) submitAddPeer(w http.ResponseWriter, r *http.Request) {
 	ip := clientIP(r)
-	if !h.passwordLimiter.allowed(ip) {
-		h.renderAddPeer(w, map[string]any{"Series": seriesNames(h.cfg.Series()), "Error": "too many attempts from your address — try again later"})
+	if !h.submitLimiter.allowed(ip) {
+		h.renderAddPeer(w, map[string]any{"Series": seriesNames(h.cfg.Series()), "Error": "too many submissions from your address — try again later"})
 		return
 	}
 	if err := r.ParseForm(); err != nil {
@@ -171,12 +177,8 @@ func (h *Handler) submitAddPeer(w http.ResponseWriter, r *http.Request) {
 			"Name": form["name"], "BaseURL": form["base_url"], "Owner": form["owner"], "Repo": form["repo"],
 		})
 	}
+	h.submitLimiter.recordFailure(ip) // counts every submission attempt, not just invalid ones — bounds queue-flooding volume
 
-	if !checkPassword(h.cfg, form["password"]) {
-		h.passwordLimiter.recordFailure(ip)
-		retry("wrong admin password")
-		return
-	}
 	if !validName.MatchString(form["name"]) {
 		retry("pair name must be letters, digits, dots, dashes or underscores only")
 		return
@@ -194,6 +196,22 @@ func (h *Handler) submitAddPeer(w http.ResponseWriter, r *http.Request) {
 		retry(err.Error())
 		return
 	}
+	// The password is optional: given and correct, this goes live right
+	// away (the "hand out the password for a class/workshop" path);
+	// given and wrong, reject outright — never silently fall back to the
+	// approval queue, which would make wrong-password attempts
+	// indistinguishable from a real submission; left blank, it queues for
+	// the admin to review, same as a stranger submitting with no password
+	// at all.
+	autoApprove := false
+	if form["password"] != "" {
+		if !checkPassword(h.cfg, form["password"]) {
+			h.passwordLimiter.recordFailure(ip)
+			retry("wrong admin password")
+			return
+		}
+		autoApprove = true
+	}
 
 	tokenFile, err := writeTokenFile(h.cfg.TokenDir, form["name"], form["token"])
 	if err != nil {
@@ -201,18 +219,25 @@ func (h *Handler) submitAddPeer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, err = h.cfg.Store.CreateDynamicRepo(state.DynamicRepo{
+	id, err := h.cfg.Store.CreateDynamicRepo(state.DynamicRepo{
 		Name: form["name"], Series: series.Name,
 		ForgejoBaseURL: form["base_url"], ForgejoOwner: form["owner"], ForgejoRepo: form["repo"], ForgejoTokenFile: tokenFile,
 		RadicleRID: series.RadicleRID, RadicleHTTPBaseURL: series.RadicleHTTPBaseURL, RadicleExplorerURL: series.RadicleExplorerURL,
 		RadicleRadHome: h.cfg.DefaultRadHome,
 		SyncGit:        r.FormValue("sync_git") != "", SyncIssues: r.FormValue("sync_issues") != "", SyncPatches: r.FormValue("sync_patches") != "",
 	})
+	if err == nil && autoApprove {
+		err = h.cfg.Store.ApproveDynamicRepo(id)
+	}
 	if err != nil {
 		retry("could not save: " + err.Error())
 		return
 	}
-	render(w, "peer added", "SELF-SERVICE ONBOARDING", renderFragment(onboardOKTmpl, map[string]string{"Title": "Peer added", "Name": form["name"]}))
+	title := "Peer submitted"
+	if autoApprove {
+		title = "Peer added"
+	}
+	render(w, title, "SELF-SERVICE ONBOARDING", renderFragment(onboardOKTmpl, map[string]any{"Title": title, "Name": form["name"], "Approved": autoApprove}))
 }
 
 func (h *Handler) newRepo(w http.ResponseWriter, r *http.Request) {
@@ -232,8 +257,8 @@ func (h *Handler) renderNewRepo(w http.ResponseWriter, data map[string]any) {
 
 func (h *Handler) submitNewRepo(w http.ResponseWriter, r *http.Request) {
 	ip := clientIP(r)
-	if !h.passwordLimiter.allowed(ip) {
-		h.renderNewRepo(w, map[string]any{"Error": "too many attempts from your address — try again later"})
+	if !h.submitLimiter.allowed(ip) {
+		h.renderNewRepo(w, map[string]any{"Error": "too many submissions from your address — try again later"})
 		return
 	}
 	if err := r.ParseForm(); err != nil {
@@ -247,12 +272,8 @@ func (h *Handler) submitNewRepo(w http.ResponseWriter, r *http.Request) {
 			"RID": form["rid"], "RadHTTP": form["rad_http"], "Explorer": form["explorer"],
 		})
 	}
+	h.submitLimiter.recordFailure(ip)
 
-	if !checkPassword(h.cfg, form["password"]) {
-		h.passwordLimiter.recordFailure(ip)
-		retry("wrong admin password")
-		return
-	}
 	if !validName.MatchString(form["name"]) {
 		retry("repo name must be letters, digits, dots, dashes or underscores only")
 		return
@@ -273,6 +294,15 @@ func (h *Handler) submitNewRepo(w http.ResponseWriter, r *http.Request) {
 		retry("the Radicle HTTP base URL isn't valid")
 		return
 	}
+	autoApprove := false
+	if form["password"] != "" {
+		if !checkPassword(h.cfg, form["password"]) {
+			h.passwordLimiter.recordFailure(ip)
+			retry("wrong admin password")
+			return
+		}
+		autoApprove = true
+	}
 
 	tokenFile, err := writeTokenFile(h.cfg.TokenDir, form["name"], form["token"])
 	if err != nil {
@@ -280,18 +310,25 @@ func (h *Handler) submitNewRepo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, err = h.cfg.Store.CreateDynamicRepo(state.DynamicRepo{
+	id, err := h.cfg.Store.CreateDynamicRepo(state.DynamicRepo{
 		Name: form["name"], Series: form["name"],
 		ForgejoBaseURL: form["base_url"], ForgejoOwner: form["owner"], ForgejoRepo: form["repo"], ForgejoTokenFile: tokenFile,
 		RadicleRID: form["rid"], RadicleHTTPBaseURL: form["rad_http"], RadicleExplorerURL: form["explorer"],
 		RadicleRadHome: h.cfg.DefaultRadHome,
 		SyncGit:        r.FormValue("sync_git") != "", SyncIssues: r.FormValue("sync_issues") != "", SyncPatches: r.FormValue("sync_patches") != "",
 	})
+	if err == nil && autoApprove {
+		err = h.cfg.Store.ApproveDynamicRepo(id)
+	}
 	if err != nil {
 		retry("could not save: " + err.Error())
 		return
 	}
-	render(w, "repo started", "SELF-SERVICE ONBOARDING", renderFragment(onboardOKTmpl, map[string]string{"Title": "Repo started", "Name": form["name"]}))
+	title := "Repo submitted"
+	if autoApprove {
+		title = "Repo started"
+	}
+	render(w, title, "SELF-SERVICE ONBOARDING", renderFragment(onboardOKTmpl, map[string]any{"Title": title, "Name": form["name"], "Approved": autoApprove}))
 }
 
 func formData(r *http.Request, fields ...string) map[string]string {

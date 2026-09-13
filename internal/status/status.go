@@ -956,6 +956,7 @@ var dashboardTmpl = template.Must(template.New("dashboard").Parse(`<!doctype htm
 <footer>
   {{if .SourceURL}}<a href="{{.SourceURL}}" target="_blank" rel="noopener">{{.SourceURL}}</a>{{end}}
   <a href="/share/new">Share a secret, once &rarr;</a>
+  <a href="/admin/pending">Pending requests &rarr;</a>
   <span>GPLv3</span>
 </footer>
 </body>
