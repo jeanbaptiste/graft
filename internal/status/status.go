@@ -897,7 +897,7 @@ var socialTmpl = template.Must(template.New("social").Parse(`<!doctype html>
   <div class="top">
     <div>
       <h1>graft — social IDs</h1>
-      <span class="sub">ActivityPub + AT Proto, per repo</span>
+      <span class="sub">ActivityPub + AT Proto</span>
     </div>
     <a class="nav-link" href="/">&larr; Dashboard</a>
   </div>
