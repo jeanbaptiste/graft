@@ -136,9 +136,17 @@ sudo systemctl enable --now graft
 
 It now mirrors both repos every `sync_interval`, in both directions, on its own.
 
+## Adding another repo from the browser
+
+Steps 2–5 above — create the Forgejo repo, mint a token, `rad init`, write the config entry — are also a form, once `graft` itself is already running: the `+ New repo` button next to the dashboard heatmap. Same prerequisites, listed inline on the page (create the Forgejo repo, generate a scoped token, `rad init`, note the RID), then one submission instead of four manual steps. Useful for a second, unrelated project once the first is up; not a way to bootstrap the very first one, since it needs `graft`'s own HTTP server already serving.
+
+Like every self-service form, it has an admin password field that's optional — see [Two ways to submit a self-service form](#two-ways-to-submit-a-self-service-form) for what filling it in, leaving it blank, or getting it wrong each do.
+
 ## Adding a peer to an existing federation
 
 Adding a second Forgejo instance to a repo already mirrored between one Forgejo and one Radicle node needs no new Radicle node and no change to the pairs already running.
+
+**From the browser**, this is the `+ Add Forgejo peer` button (`/add-peer`): pick the federation from a dropdown, and the Radicle side (RID, seed, explorer) is filled in for you, not asked for — the manual steps below exist to show what that button does, and to cover the case where the peer's admin doesn't have dashboard access. Same optional-password rule as above.
 
 | Placeholder | Stands for |
 |---|---|
@@ -197,6 +205,8 @@ A Radicle RID replicates to every node that seeds it, independent of `graft`. Po
 
 Reusing an existing seed needs nothing extra. A node nobody in the mesh has talked to needs two manual steps — `graft`'s own Radicle node doesn't discover new peers on its own:
 
+**From the browser**, this is the `+ Add Radicle peer` button (`/add-radicle-peer`): pick the federation, enter the new node's ID and address, and it runs the same two commands below on `graft`'s own node. Same optional-password rule as [above](#two-ways-to-submit-a-self-service-form).
+
 ```sh
 rad node connect <new-node-id>@<new-node-address>:8776
 rad seed rad:z3gqcJUoA1n9HaHKufZs5FCSGazv5
@@ -224,19 +234,16 @@ Dashboard cells are colored by kind only (commit, issue, patch, comment) — nev
 
 **A patch/PR never shows up on the other side** — check that the corresponding repo isn't still empty on the destination. The first git sync has to land before patches/issues referencing that content can be mirrored.
 
-## Self-service dashboard actions
+## Self-service forms: submitting and reviewing
 
-Three buttons next to the federation heatmap, plus two footer links, do the above through a browser:
+The three buttons next to the federation heatmap — `+ Add Forgejo peer`, `+ Add Radicle peer`, `+ New repo` — are covered in context above, right next to their manual equivalents. This section covers what's common to all three, plus the two footer links:
 
-- **`+ Add Forgejo peer`** (`/add-peer`) — join an existing series. Radicle side (RID, seed, explorer) is filled in from the chosen series, not asked for. Repo must exist on the peer, empty (no auto-init — see above).
-- **`+ Add Radicle peer`** (`/add-radicle-peer`) — connect a new Radicle node to the mesh and seed an existing federation's RID (`rad node connect` + `rad seed`, run on graft's own node).
-- **`+ New repo`** (`/new-repo`) — prerequisites listed inline (create the Forgejo repo, generate a scoped token, `rad init`, note the RID), then a form.
 - **`Share a secret, once`** (`/share/new`, footer) — the one-time-secret page below. Creating a share needs no password; claiming needs the passcode.
 - **`Pending requests`** (`/admin/pending`, footer) — review queue, see below.
 
-### Two ways to submit any of the three onboarding forms
+### Two ways to submit a self-service form
 
-Each form has one optional field: the admin password. What happens depends on it:
+Each of the three onboarding forms has one optional field: the admin password. What happens depends on it:
 
 - **Left blank** — the submission becomes a pending request. Nothing happens yet: no sync, no `rad node connect`, nothing touches any Forgejo or Radicle instance. Anyone can submit one without ever knowing the password — this is the path for someone outside your trust circle (a contributor like Milo) proposing themselves as a peer.
 - **Filled in, correct** — goes live immediately, exactly as graft always has: the peer/repo is active within one `sync_interval` (no restart), or for a Radicle peer, `rad node connect` + `rad seed` run right away. This is still the right tool for a class or workshop where you hand the password to a trusted group who should self-serve without a review step.
