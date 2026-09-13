@@ -7,11 +7,11 @@ jobs:
   mirror:
     runs-on: linux-host
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: push to GitHub
+      - name: clone and push to GitHub
         run: |
           set -e
-          git remote add github https://x-access-token:${{ secrets.GH_PUSH_TOKEN }}@github.com/jeanbaptiste/graft.git
-          git push github HEAD:main
+          rm -rf /tmp/graft-mirror
+          git clone --bare https://f1.cyberwild.org/forgeadmin/graft.git /tmp/graft-mirror
+          cd /tmp/graft-mirror
+          git push "https://x-access-token:${{ secrets.GH_PUSH_TOKEN }}@github.com/jeanbaptiste/graft.git" main:main
+          rm -rf /tmp/graft-mirror
