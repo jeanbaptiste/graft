@@ -36,8 +36,10 @@ func (r PairResult) ok() bool {
 // instance or a specific Radicle node — as configured, regardless of
 // whether it has ever actually produced an event yet.
 type ServerRef struct {
-	Label string // host, e.g. "f1.cyberwild.org"
-	URL   string // repo root on that host
+	Label                 string // host, e.g. "f1.cyberwild.org"
+	URL                   string // repo root on that host
+	Radicle               bool   // true if this side is a Radicle node
+	AuthorizedIntegration bool   // true if this Forgejo side receives pushes directly from another pair's Forgejo, bypassing graft
 }
 
 // Tracker holds the latest result per repo pair, safe for concurrent use,
@@ -305,9 +307,18 @@ type seriesRow struct {
 // with 3 mirrored sides (two Forgejos plus Radicle) gets 3 sub-rows, never
 // one link picked arbitrarily to represent all of them.
 type subRow struct {
-	Label  string
-	URL    string
-	Events []event
+	Label string
+	URL   string
+	// EmptyState explains why this side shows no events even though it may
+	// already hold the mirrored content — empty when Events is non-empty,
+	// or when the whole series has genuinely never been touched. "source"
+	// marks the Forgejo side changes originate on (graft only logs the
+	// pushes it makes, never the pushes it reads from); "replicated" marks
+	// a side that received the content some other way graft doesn't log
+	// itself — Radicle's own peer-to-peer gossip between nodes, or a
+	// Forgejo-to-Forgejo Authorized Integration.
+	EmptyState string
+	Events     []event
 }
 
 // event is one activity_log row: one heatmap cell, one tooltip, one link.
@@ -373,8 +384,10 @@ func hostLabel(rawURL string) string {
 // behind one shared tooltip.
 func buildSeriesRows(entries []state.ActivityEntry, health map[string]bool, topology map[string][]ServerRef) []seriesRow {
 	type subAcc struct {
-		url    string
-		events []state.ActivityEntry
+		url     string
+		events  []state.ActivityEntry
+		radicle bool
+		ai      bool
 	}
 	type seriesAcc struct {
 		subOrder []string
@@ -412,6 +425,8 @@ func buildSeriesRows(entries []state.ActivityEntry, health map[string]bool, topo
 			if sub.url == "" {
 				sub.url = ref.URL
 			}
+			sub.radicle = ref.Radicle
+			sub.ai = ref.AuthorizedIntegration
 		}
 	}
 
@@ -442,6 +457,19 @@ func buildSeriesRows(entries []state.ActivityEntry, health map[string]bool, topo
 		subOrder := append([]string(nil), sa.subOrder...)
 		sort.Strings(subOrder)
 
+		// A series with at least one logged event anywhere means every
+		// currently-silent side already holds the mirrored content too —
+		// either as the origin, or received via a path graft doesn't log
+		// itself (Radicle gossip, an Authorized Integration). Only a
+		// series with zero events anywhere is genuinely untouched.
+		anyEvents := false
+		for _, label := range subOrder {
+			if len(sa.subs[label].events) > 0 {
+				anyEvents = true
+				break
+			}
+		}
+
 		subRows := make([]subRow, 0, len(subOrder))
 		for _, label := range subOrder {
 			sub := sa.subs[label]
@@ -450,7 +478,17 @@ func buildSeriesRows(entries []state.ActivityEntry, health map[string]bool, topo
 			es := make([]state.ActivityEntry, len(sub.events))
 			copy(es, sub.events)
 			sort.Slice(es, func(i, j int) bool { return es[i].OccurredAt.Before(es[j].OccurredAt) })
-			subRows = append(subRows, subRow{Label: label, URL: sub.url, Events: toEvents(es)})
+
+			emptyState := ""
+			if len(es) == 0 && anyEvents {
+				switch {
+				case sub.ai, sub.radicle:
+					emptyState = "replicated"
+				default:
+					emptyState = "source"
+				}
+			}
+			subRows = append(subRows, subRow{Label: label, URL: sub.url, EmptyState: emptyState, Events: toEvents(es)})
 		}
 
 		ok, known := health[name]
@@ -564,6 +602,8 @@ var dashboardTmpl = template.Must(template.New("dashboard").Parse(`<!doctype htm
     --kind-git:     #0052cc;
     --kind-issue:   #00875a;
     --kind-patch:   #6554c0;
+    --kind-source:     #ff991f;
+    --kind-replicated: #00b8d9;
     --bad:          #de350b;
     --good:         #36b37e;
   }
@@ -594,7 +634,7 @@ var dashboardTmpl = template.Must(template.New("dashboard").Parse(`<!doctype htm
   .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--good); flex: none; display: inline-block; }
   .dot.bad { background: var(--bad); }
 
-  .heatmap-head { display: flex; align-items: baseline; justify-content: space-between; }
+  .heatmap-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: .9rem; }
   .heatmap-head h2 { margin: 0; }
   .legend { display: flex; gap: .9rem; margin-bottom: .9rem; }
   .legend span { display: flex; align-items: center; gap: .35rem; font-size: .74rem; color: var(--text-muted); }
@@ -602,6 +642,8 @@ var dashboardTmpl = template.Must(template.New("dashboard").Parse(`<!doctype htm
   .legend .sw[data-kind="git"] { background: var(--kind-git); }
   .legend .sw[data-kind="issue"] { background: var(--kind-issue); }
   .legend .sw[data-kind="patch"] { background: var(--kind-patch); }
+  .legend .sw[data-kind="source"] { background: var(--kind-source); }
+  .legend .sw[data-kind="replicated"] { background: var(--kind-replicated); }
   .heatmap { display: flex; flex-direction: column; gap: .15rem; }
   .series-group { border-bottom: 1px solid var(--border); }
   .series-group:last-child { border-bottom: none; }
@@ -656,6 +698,16 @@ var dashboardTmpl = template.Must(template.New("dashboard").Parse(`<!doctype htm
   .tip .tip-kind { color: #b3bac5; flex: none; }
   .tip .tip-empty { padding: 0 .75rem; color: #b3bac5; }
 
+  .state-pill {
+    display: inline-flex; align-items: center; gap: .35rem;
+    font-size: .74rem; padding: .2rem .6rem; border-radius: 999px;
+  }
+  .state-pill .state-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+  .state-pill.state-source { background: rgba(255,153,31,.14); color: #974f0c; }
+  .state-pill.state-source .state-dot { background: var(--kind-source); }
+  .state-pill.state-replicated { background: rgba(0,184,217,.14); color: #0868a0; }
+  .state-pill.state-replicated .state-dot { background: var(--kind-replicated); }
+
   h2 { font-size: .78rem; text-transform: uppercase; letter-spacing: .04em; color: var(--text-muted); margin: 0 0 .9rem; font-weight: 600; }
   .commits { border-top: 1px solid var(--border); }
   .commit {
@@ -691,18 +743,19 @@ var dashboardTmpl = template.Must(template.New("dashboard").Parse(`<!doctype htm
   <div class="top">
     <div>
       <h1>graft</h1>
-      <span class="sub">Forgejo &lt;-&gt; Radicle sync — last 3 days</span>
+      <span class="sub">Forgejos &amp; Radicles syncs</span>
     </div>
-    {{if .SocialEnabled}}<a class="nav-link" href="/social">Social bridges &rarr;</a>{{end}}
+    {{if .SocialEnabled}}<a class="nav-link" href="/social">Social IDs &rarr;</a>{{end}}
   </div>
 
   <div class="card">
     <div class="heatmap-head">
-      <h2>Activity by repo</h2>
       <div class="legend">
         <span><i class="sw" data-kind="git"></i>Commit</span>
         <span><i class="sw" data-kind="issue"></i>Issue</span>
         <span><i class="sw" data-kind="patch"></i>Patch</span>
+        <span><i class="sw" data-kind="source"></i>Source</span>
+        <span><i class="sw" data-kind="replicated"></i>Replicated</span>
       </div>
     </div>
     <div class="heatmap">
@@ -734,7 +787,13 @@ var dashboardTmpl = template.Must(template.New("dashboard").Parse(`<!doctype htm
                 </div>
               </div>
             {{else}}
+              {{if eq .EmptyState "source"}}
+              <span class="state-pill state-source" title="content originates here — graft only logs the pushes it makes, not the pushes it reads from"><span class="state-dot"></span>source</span>
+              {{else if eq .EmptyState "replicated"}}
+              <span class="state-pill state-replicated" title="content arrived here without a graft-logged push — Radicle peer-to-peer gossip, or a Forgejo Authorized Integration"><span class="state-dot"></span>replicated</span>
+              {{else}}
               <span class="tip-empty">nothing synced</span>
+              {{end}}
             {{end}}
             </div>
           </div>
@@ -748,7 +807,10 @@ var dashboardTmpl = template.Must(template.New("dashboard").Parse(`<!doctype htm
   </div>
 
   <div class="card">
-    <h2>Recent activity</h2>
+    <div class="heatmap-head">
+      <h2>Recent activity</h2>
+      <span class="sub">last 3 days</span>
+    </div>
     <div class="commits">
     {{range .Activity}}
       <div class="commit">
@@ -784,7 +846,7 @@ var socialTmpl = template.Must(template.New("social").Parse(`<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>graft — social bridges</title>
+<title>graft — social IDs</title>
 <style>
   :root {
     color-scheme: light;
@@ -834,7 +896,7 @@ var socialTmpl = template.Must(template.New("social").Parse(`<!doctype html>
 <main>
   <div class="top">
     <div>
-      <h1>graft — social bridges</h1>
+      <h1>graft — social IDs</h1>
       <span class="sub">ActivityPub + AT Proto, per repo</span>
     </div>
     <a class="nav-link" href="/">&larr; Dashboard</a>

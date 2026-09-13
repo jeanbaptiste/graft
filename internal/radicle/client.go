@@ -6,14 +6,25 @@ package radicle
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
 	"regexp"
 	"time"
 )
+
+// execTimeout bounds every "rad" CLI subprocess — see the matching
+// constant and comment in internal/sync/git.go for why this matters: a
+// hung subprocess would otherwise block the whole sync loop.
+const execTimeout = 5 * time.Minute
+
+// maxResponseBody caps how much of a radicle-httpd response this client
+// reads into memory.
+const maxResponseBody = 4 << 20 // 4 MiB — patch/issue listings can be large
 
 // Client operates on one repository (identified by its RID) tracked by one
 // local Radicle node.
@@ -44,14 +55,16 @@ func (c *Client) getJSON(path string, out any) error {
 	if resp.StatusCode >= 300 {
 		return fmt.Errorf("GET %s: HTTP %d", path, resp.StatusCode)
 	}
-	return json.NewDecoder(resp.Body).Decode(out)
+	return json.NewDecoder(io.LimitReader(resp.Body, maxResponseBody)).Decode(out)
 }
 
 // rad runs the CLI against this client's repository and RAD_HOME, returning
 // combined stdout+stderr for logging on error.
 func (c *Client) rad(args ...string) (string, error) {
 	args = append(args, "--repo", c.rid)
-	cmd := exec.Command(c.radBin, args...)
+	ctx, cancel := context.WithTimeout(context.Background(), execTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, c.radBin, args...)
 	cmd.Env = append(os.Environ(), "RAD_HOME="+c.radHome)
 	var out bytes.Buffer
 	cmd.Stdout = &out

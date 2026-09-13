@@ -14,6 +14,16 @@ import (
 	"time"
 )
 
+// maxResponseBody caps how much of a Forgejo response this client reads
+// into memory.
+const maxResponseBody = 4 << 20 // 4 MiB
+
+// maxLoggedBody caps how much of an error response body gets embedded in
+// an error message (and from there, into logs) — an upstream server's
+// response is content we don't control, so it shouldn't get an unbounded
+// write into our own logging.
+const maxLoggedBody = 500
+
 // Client talks to one Forgejo instance on behalf of one repository.
 type Client struct {
 	baseURL string
@@ -58,16 +68,23 @@ func (c *Client) do(method, path string, body any, out any) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 300 {
-		respBody, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("%s %s: HTTP %d: %s", method, path, resp.StatusCode, string(respBody))
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseBody))
+		return fmt.Errorf("%s %s: HTTP %d: %s", method, path, resp.StatusCode, truncate(respBody))
 	}
 
 	if out != nil {
-		if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+		if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseBody)).Decode(out); err != nil {
 			return fmt.Errorf("decode response for %s %s: %w", method, path, err)
 		}
 	}
 	return nil
+}
+
+func truncate(b []byte) string {
+	if len(b) <= maxLoggedBody {
+		return string(b)
+	}
+	return string(b[:maxLoggedBody]) + "... (truncated)"
 }
 
 // Repository is the subset of Forgejo's repository object the daemon uses.

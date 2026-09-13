@@ -42,6 +42,12 @@ func SignRequest(req *http.Request, body []byte, keyID string, priv *rsa.Private
 	return nil
 }
 
+// maxClockSkew bounds how far a signed request's Date header may drift
+// from this server's clock before it's rejected — without this, a
+// captured valid signed request (Follow, reply, ...) could be replayed
+// indefinitely.
+const maxClockSkew = 5 * time.Minute
+
 // VerifyRequest verifies an inbound request's Signature header against
 // pub, re-deriving the signing string from whichever headers the
 // signature itself claims to cover (a remote server may sign a different
@@ -50,6 +56,18 @@ func VerifyRequest(r *http.Request, body []byte, pub *rsa.PublicKey) error {
 	params := parseSignatureHeader(r.Header.Get("Signature"))
 	if params["signature"] == "" {
 		return fmt.Errorf("missing or unparseable Signature header")
+	}
+
+	if dateHeader := r.Header.Get("Date"); dateHeader != "" {
+		signedAt, err := http.ParseTime(dateHeader)
+		if err != nil {
+			return fmt.Errorf("unparseable Date header: %w", err)
+		}
+		if skew := time.Since(signedAt); skew > maxClockSkew || skew < -maxClockSkew {
+			return fmt.Errorf("Date header too far from current time (skew %s), possible replay", skew)
+		}
+	} else {
+		return fmt.Errorf("missing Date header")
 	}
 
 	if digestHeader := r.Header.Get("Digest"); digestHeader != "" {
@@ -134,8 +152,20 @@ func PostSigned(client *http.Client, url, keyID string, priv *rsa.PrivateKey, bo
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
-		respBody, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("post %s: HTTP %d: %s", url, resp.StatusCode, string(respBody))
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseBody))
+		return fmt.Errorf("post %s: HTTP %d: %s", url, resp.StatusCode, truncateForLog(respBody))
 	}
 	return nil
+}
+
+// truncateForLog caps how much of a remote error body ends up embedded in
+// an error message (and from there, in logs) — a remote server's response
+// is untrusted content, and shouldn't get an unbounded write into our own
+// logging.
+func truncateForLog(b []byte) string {
+	const max = 500
+	if len(b) <= max {
+		return string(b)
+	}
+	return string(b[:max]) + "... (truncated)"
 }

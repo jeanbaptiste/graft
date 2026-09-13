@@ -152,6 +152,15 @@ func (rs *RepoSyncer) SetAuthorizedIntegrationSource(host string) {
 	}
 }
 
+// HasAuthorizedIntegrationSource reports whether this pair's Forgejo side
+// already receives pushes directly from another pair's Forgejo via
+// Authorized Integrations (set by SetAuthorizedIntegrationSource at
+// startup) — used by the dashboard to explain why this side shows no
+// graft-logged events even though it holds the mirrored content.
+func (rs *RepoSyncer) HasAuthorizedIntegrationSource() bool {
+	return rs.git != nil && rs.git.AuthorizedIntegrationSource != ""
+}
+
 // Series is the dashboard row this pair's activity groups under: its
 // configured series, or its own name if unset.
 func (rs *RepoSyncer) Series() string {

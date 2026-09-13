@@ -65,7 +65,23 @@ func main() {
 	}
 	detectAuthorizedIntegrations(pairsBySeries, log)
 
-	topology := buildTopology(cfg)
+	// aiTargetHosts marks which series+Forgejo-host combinations receive
+	// pushes directly via Authorized Integrations rather than via graft
+	// itself — read by buildTopology so the dashboard can tell that side's
+	// silence apart from a side nothing has ever reached.
+	aiTargetHosts := map[string]map[string]bool{}
+	for series, pairs := range pairsBySeries {
+		for _, rs := range pairs {
+			if rs.HasAuthorizedIntegrationSource() {
+				if aiTargetHosts[series] == nil {
+					aiTargetHosts[series] = map[string]bool{}
+				}
+				aiTargetHosts[series][rs.ForgejoHost()] = true
+			}
+		}
+	}
+
+	topology := buildTopology(cfg, aiTargetHosts)
 	blueskyConfigured := map[string]bool{}
 	for _, pair := range cfg.Repos {
 		if pair.Bluesky != nil {
@@ -157,10 +173,10 @@ func main() {
 // (its Forgejo side and its Radicle side), so the dashboard can show a
 // side that's never produced an event yet — not just sides the activity
 // log happens to mention.
-func buildTopology(cfg *config.Config) map[string][]status.ServerRef {
+func buildTopology(cfg *config.Config, aiTargetHosts map[string]map[string]bool) map[string][]status.ServerRef {
 	topology := map[string][]status.ServerRef{}
 	seen := map[string]bool{}
-	add := func(series, host, repoURL string) {
+	add := func(series, host, repoURL string, radicle, ai bool) {
 		if host == "" {
 			return
 		}
@@ -169,7 +185,12 @@ func buildTopology(cfg *config.Config) map[string][]status.ServerRef {
 			return
 		}
 		seen[key] = true
-		topology[series] = append(topology[series], status.ServerRef{Label: host, URL: repoURL})
+		topology[series] = append(topology[series], status.ServerRef{
+			Label:                 host,
+			URL:                   repoURL,
+			Radicle:               radicle,
+			AuthorizedIntegration: ai,
+		})
 	}
 
 	for _, pair := range cfg.Repos {
@@ -183,13 +204,13 @@ func buildTopology(cfg *config.Config) map[string][]status.ServerRef {
 			fHost = u.Host
 		}
 		fURL := strings.TrimRight(pair.Forgejo.BaseURL, "/") + "/" + pair.Forgejo.Owner + "/" + pair.Forgejo.Repo
-		add(series, fHost, fURL)
+		add(series, fHost, fURL, false, aiTargetHosts[series][fHost])
 
 		rHost := ""
 		if u, err := url.Parse(pair.Radicle.HTTPBaseURL); err == nil {
 			rHost = u.Host
 		}
-		add(series, rHost, sync.RadicleExplorerLink(pair.Radicle))
+		add(series, rHost, sync.RadicleExplorerLink(pair.Radicle), true, false)
 	}
 	return topology
 }

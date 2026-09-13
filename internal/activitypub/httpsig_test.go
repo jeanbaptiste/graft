@@ -2,11 +2,18 @@ package activitypub
 
 import (
 	"bytes"
+	"crypto"
+	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
+	"encoding/base64"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 )
 
 // TestSignVerifyRoundTrip exercises the actual code path a remote server
@@ -64,6 +71,42 @@ func TestVerifyRejectsTamperedBody(t *testing.T) {
 	tampered := []byte(`{"type":"Follow","actor":"https://attacker.example/users/mallory"}`)
 	if err := VerifyRequest(req, tampered, pub); err == nil {
 		t.Fatal("expected verification to fail on tampered body, got nil error")
+	}
+}
+
+// TestVerifyRejectsStaleDate confirms a byte-for-byte replay of an old,
+// genuinely-validly-signed request is rejected: the signature itself
+// verifies fine (Date is part of what was signed, and hasn't changed —
+// this is a faithful replay, not tampering), but the freshness check must
+// still catch that "now" is far past the signed Date. SignRequest always
+// stamps the current time, so this builds the signature by hand with a
+// fixed old Date to simulate a captured-and-replayed request correctly.
+func TestVerifyRejectsStaleDate(t *testing.T) {
+	_, pub, priv := testKeyPair(t)
+	body := []byte(`{"type":"Follow","actor":"https://example.social/users/alice"}`)
+	keyID := "https://example.social/users/alice#main-key"
+
+	req, err := http.NewRequest(http.MethodPost, "https://graft.example.org/actors/testrepo/inbox", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldDate := time.Now().Add(-1 * time.Hour).UTC().Format(http.TimeFormat)
+	digest := sha256.Sum256(body)
+	req.Header.Set("Digest", "SHA-256="+base64.StdEncoding.EncodeToString(digest[:]))
+	req.Header.Set("Date", oldDate)
+
+	signingString := buildSigningString(signedHeaders, req.Method, req.URL.RequestURI(), req.URL.Host, req.Header)
+	hashed := sha256.Sum256([]byte(signingString))
+	sig, err := rsa.SignPKCS1v15(rand.Reader, priv, crypto.SHA256, hashed[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Signature", fmt.Sprintf(
+		`keyId="%s",algorithm="rsa-sha256",headers="%s",signature="%s"`,
+		keyID, strings.Join(signedHeaders, " "), base64.StdEncoding.EncodeToString(sig)))
+
+	if err := VerifyRequest(req, body, pub); err == nil {
+		t.Fatal("expected verification to fail on a stale/replayed Date header, got nil error")
 	}
 }
 

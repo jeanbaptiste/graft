@@ -57,7 +57,7 @@ func NewHandler(
 		known:       known,
 		postComment: postComment,
 		radicleDID:  radicleDID,
-		client:      &http.Client{Timeout: 15 * time.Second},
+		client:      NewSafeClient(15 * time.Second),
 	}
 }
 
@@ -398,6 +398,14 @@ func (h *Handler) DeliverNewActivity() {
 				continue
 			}
 			for _, f := range followers {
+				// Defense in depth: FetchActor already validates an
+				// inbox URL before a follower is ever stored, but check
+				// again here too, in case older data predates that
+				// validation or was written some other way.
+				if err := ValidateExternalURL(f.InboxURI); err != nil {
+					h.log.Error("ap delivery: refusing unsafe follower inbox", "series", series, "follower", f.ActorURI, "err", err)
+					continue
+				}
 				if err := PostSigned(h.client, f.InboxURI, keyID, priv, body); err != nil {
 					h.log.Error("ap delivery: post to follower", "series", series, "follower", f.ActorURI, "err", err)
 				}

@@ -6,6 +6,7 @@ package state
 import (
 	"database/sql"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -26,6 +27,14 @@ func Open(path string) (*Store, error) {
 	if err := migrate(db); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("migrate state db: %w", err)
+	}
+	// This database holds every series' ActivityPub private key
+	// (ap_actor.private_key) in plaintext — it must never be
+	// group/world-readable, regardless of the umask the daemon happened to
+	// start with. Best-effort: sqlite may not have created the file yet on
+	// the very first Open before migrate runs, but by this point it has.
+	if err := os.Chmod(path, 0o600); err != nil {
+		return nil, fmt.Errorf("restrict state db permissions: %w", err)
 	}
 	return &Store{db: db}, nil
 }

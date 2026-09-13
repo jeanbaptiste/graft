@@ -21,6 +21,22 @@ const defaultPDSHost = "https://bsky.social"
 // for graft's short auto-generated notes).
 const maxPostRunes = 300
 
+// maxResponseBody caps how much of a PDS response this client reads into
+// memory; maxLoggedBody further caps how much of an error body ends up
+// embedded in an error message (and from there, in logs) — untrusted
+// upstream content shouldn't get an unbounded write into our own logging.
+const (
+	maxResponseBody = 1 << 20 // 1 MiB
+	maxLoggedBody   = 500
+)
+
+func truncate(b []byte) string {
+	if len(b) <= maxLoggedBody {
+		return string(b)
+	}
+	return string(b[:maxLoggedBody]) + "... (truncated)"
+}
+
 // Client is a session against one AT Proto PDS, authenticated as one
 // account.
 type Client struct {
@@ -61,15 +77,15 @@ func (c *Client) Login(handle, appPassword string) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
-		b, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("create session: HTTP %d: %s", resp.StatusCode, b)
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseBody))
+		return fmt.Errorf("create session: HTTP %d: %s", resp.StatusCode, truncate(b))
 	}
 
 	var out struct {
 		DID       string `json:"did"`
 		AccessJwt string `json:"accessJwt"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseBody)).Decode(&out); err != nil {
 		return fmt.Errorf("decode session: %w", err)
 	}
 	c.did = out.DID
@@ -115,8 +131,8 @@ func (c *Client) Post(text string) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
-		b, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("create record: HTTP %d: %s", resp.StatusCode, b)
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseBody))
+		return fmt.Errorf("create record: HTTP %d: %s", resp.StatusCode, truncate(b))
 	}
 	return nil
 }

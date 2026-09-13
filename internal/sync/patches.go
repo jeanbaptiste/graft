@@ -2,6 +2,7 @@ package sync
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -32,7 +33,9 @@ type PatchSyncer struct {
 }
 
 func (s *PatchSyncer) git(args ...string) (string, error) {
-	cmd := exec.Command("git", args...)
+	ctx, cancel := context.WithTimeout(context.Background(), execTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = s.WorkDir
 	// Must start from the inherited environment, not a bare slice: git
 	// needs PATH to resolve the git-remote-rad helper for rad:// remotes.

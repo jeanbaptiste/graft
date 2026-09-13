@@ -11,14 +11,22 @@ package sync
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"graft/internal/state"
 )
+
+// execTimeout bounds every git/rad subprocess this package runs. Without
+// it, one hung fetch/push (a slow network, an unresponsive Radicle node)
+// would block the single-threaded sync loop forever — every other
+// configured pair too, not just the stuck one.
+const execTimeout = 5 * time.Minute
 
 // GitSyncer mirrors a repository's default branch between Forgejo and
 // Radicle using a local working clone with two remotes.
@@ -41,12 +49,26 @@ type GitSyncer struct {
 	// this pair waiting for the next poll to relay it via Radicle. When
 	// set, Sync skips its own rad -> forgejo push and just observes
 	// whether the content has already arrived, falling back to pushing it
-	// itself only once a real divergence would otherwise be reported.
+	// itself only once a real divergence would otherwise be reported —
+	// or after maxAISkipStreak consecutive passes without convergence
+	// (see Sync), since detection here is a content heuristic (authint.go),
+	// not a guarantee the workflow is actually delivering.
 	AuthorizedIntegrationSource string
+	aiSkipStreak                int
 }
 
+// maxAISkipStreak bounds how many consecutive passes GitSyncer will trust
+// AuthorizedIntegrationSource without seeing forgejo actually catch up to
+// radicle. Detection is a heuristic (a matching string in a workflow
+// file), not proof the integration is configured correctly or even still
+// working — without this bound, a stale or misconfigured workflow would
+// make graft silently stop mirroring that direction forever.
+const maxAISkipStreak = 10
+
 func (g *GitSyncer) run(args ...string) (string, error) {
-	cmd := exec.Command("git", args...)
+	ctx, cancel := context.WithTimeout(context.Background(), execTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = g.WorkDir
 	cmd.Env = append(os.Environ(), "RAD_HOME="+g.RadHome)
 	var out bytes.Buffer
@@ -98,7 +120,9 @@ func (g *GitSyncer) localNodeID() (string, error) {
 	// --nid is deprecated in favor of `rad node status --only nid` and
 	// prints a warning to stderr; keep that separate from stdout so it
 	// never ends up concatenated into the id itself.
-	cmd := exec.Command("rad", "self", "--nid")
+	ctx, cancel := context.WithTimeout(context.Background(), execTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "rad", "self", "--nid")
 	cmd.Env = append(os.Environ(), "RAD_HOME="+g.RadHome)
 	var out, errOut bytes.Buffer
 	cmd.Stdout = &out
@@ -158,6 +182,7 @@ func (g *GitSyncer) Sync() error {
 	case forgejoHead == radHead:
 		// Already in sync; still record the cursor in case this is the
 		// first run and it was empty before.
+		g.aiSkipStreak = 0
 
 	case radHead == "" || radHead == lastRad:
 		// Radicle hasn't moved since we last looked: forgejo is ahead.
@@ -167,12 +192,13 @@ func (g *GitSyncer) Sync() error {
 
 	case forgejoHead == "" || forgejoHead == lastForgejo:
 		// Forgejo hasn't moved: rad is ahead.
-		if g.AuthorizedIntegrationSource != "" {
+		if g.AuthorizedIntegrationSource != "" && g.aiSkipStreak < maxAISkipStreak {
 			// Someone else's CI already pushes directly into this
 			// Forgejo (see AuthorizedIntegrationSource's doc comment) —
 			// faster than waiting for us to relay it via Radicle.
 			// Nothing to do; next pass sees forgejoHead == radHead once
 			// it arrives, same as any other convergence.
+			g.aiSkipStreak++
 			break
 		}
 		if err := g.pushBranch("rad", "forgejo", forgejoHead, state.RadicleToForgejo); err != nil {
@@ -188,7 +214,8 @@ func (g *GitSyncer) Sync() error {
 
 	case g.isAncestor(forgejoHead, radHead):
 		// Symmetric case: forgejo's tip is contained in rad's.
-		if g.AuthorizedIntegrationSource != "" {
+		if g.AuthorizedIntegrationSource != "" && g.aiSkipStreak < maxAISkipStreak {
+			g.aiSkipStreak++
 			break
 		}
 		if err := g.pushBranch("rad", "forgejo", forgejoHead, state.RadicleToForgejo); err != nil {
