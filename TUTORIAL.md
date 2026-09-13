@@ -226,13 +226,27 @@ Dashboard cells are colored by kind only (commit, issue, patch, comment) — nev
 
 ## Self-service dashboard actions
 
-Two buttons next to the federation heatmap, plus a footer link, do the above through a browser:
+Three buttons next to the federation heatmap, plus two footer links, do the above through a browser:
 
-- **`+ Add peer`** (`/add-peer`) — join an existing series. Radicle side (RID, seed, explorer) is filled in from the chosen series, not asked for. Repo must exist on the peer, empty (no auto-init — see above). Submit Forgejo details, token, admin password. Live within one `sync_interval`.
+- **`+ Add Forgejo peer`** (`/add-peer`) — join an existing series. Radicle side (RID, seed, explorer) is filled in from the chosen series, not asked for. Repo must exist on the peer, empty (no auto-init — see above).
+- **`+ Add Radicle peer`** (`/add-radicle-peer`) — connect a new Radicle node to the mesh and seed an existing federation's RID (`rad node connect` + `rad seed`, run on graft's own node).
 - **`+ New repo`** (`/new-repo`) — prerequisites listed inline (create the Forgejo repo, generate a scoped token, `rad init`, note the RID), then a form.
 - **`Share a secret, once`** (`/share/new`, footer) — the one-time-secret page below. Creating a share needs no password; claiming needs the passcode.
+- **`Pending requests`** (`/admin/pending`, footer) — review queue, see below.
 
-Both onboarding forms check `admin_password` from `config.yaml` (default `graft`; `graft` logs a startup warning if unchanged). Constant-time comparison, rate-limited: 5 wrong attempts per IP or 20 total, per 15 minutes.
+### Two ways to submit any of the three onboarding forms
+
+Each form has one optional field: the admin password. What happens depends on it:
+
+- **Left blank** — the submission becomes a pending request. Nothing happens yet: no sync, no `rad node connect`, nothing touches any Forgejo or Radicle instance. Anyone can submit one without ever knowing the password — this is the path for someone outside your trust circle (a contributor like Milo) proposing themselves as a peer.
+- **Filled in, correct** — goes live immediately, exactly as graft always has: the peer/repo is active within one `sync_interval` (no restart), or for a Radicle peer, `rad node connect` + `rad seed` run right away. This is still the right tool for a class or workshop where you hand the password to a trusted group who should self-serve without a review step.
+- **Filled in, wrong** — rejected outright. It never silently falls back to a pending request — that would turn the form into a way to probe the password with no lockout consequence, defeating the rate limiter below.
+
+### Reviewing pending requests
+
+`/admin/pending` is the only place the password gates anything for the request path. It's a stateless review list, no login session: entering the password once renders every pending Forgejo peer, new repo, and Radicle peer request, each with its own Approve/Reject button that re-submits the same password. Approving a Forgejo peer/repo request just flips it active (same "next sync pass" activation as the instant path); approving a Radicle peer request runs `rad node connect` + `rad seed` at that moment. Rejecting a Forgejo peer/repo request also deletes the token file it already wrote to disk, so a rejected submission leaves nothing behind.
+
+Both checks against it (the onboarding forms' optional field, and the pending-review page) use `admin_password` from `config.yaml` (default `graft`; `graft` logs a startup warning if left at that default), constant-time comparison, rate-limited: 5 wrong attempts per IP or 20 total, per 15 minutes. `/share/new`'s claim page is a separate secret entirely — the 6-digit passcode, checked by AES-GCM decryption rather than a stored comparison (see Built-in token exchange below) — with its own, independent rate limiter.
 
 ## Built-in token exchange
 
