@@ -9,10 +9,21 @@ It runs on a timer, keeps state in a local SQLite file, and never force-pushes. 
 - **Git content**: the default branch, fast-forward only.
 - **Issues**: Forgejo issues become Radicle issues and vice versa. Create-only for now — edits made after the first mirror aren't propagated yet.
 - **Patches / pull requests**: a Forgejo PR opens a Radicle patch (and back), by pushing the PR's head commit to `refs/patches` on the Radicle side, or as a branch + PR on the Forgejo side.
+- **Comments**: on issues and patches, both directions, from four origins — native Forgejo ↔ Radicle, a Mastodon reply (ActivityPub), and a Bluesky reply (AT Proto). Dedup'd by content hash, prefixed with where it actually came from. See [TUTORIAL.md § Comments](TUTORIAL.md#comments).
 
 ## Why
 
 Forgejo and Radicle solve the same problem — hosting and reviewing changes to a git repository — with opposite architectures: one is a server you point a browser at, the other is a peer-to-peer protocol with no server at all. `graft` lets a project exist on both.
+
+## Dashboard
+
+`graft` serves a status page (`/`) alongside the sync daemon: one row per federation, one cell per mirrored commit/issue/patch/comment, colored by kind. A mirror in sync with the rest of its federation shows the same cells as everyone else, even for content it didn't itself log; a mirror whose last sync pass actually failed shows only what it has confirmed, plus a visible error badge — the heatmap is never a silent source of "why does this one look behind."
+
+Three buttons next to it (`+ Add Forgejo peer`, `+ Add Radicle peer`, `+ New repo`) let a peer join a federation or start a new one without shell access — instantly with the admin password, or as a request the admin approves from `/admin/pending` without one. Each is covered next to its manual equivalent in [TUTORIAL.md](TUTORIAL.md); the shared mechanics are in [§ Self-service forms](TUTORIAL.md#self-service-forms-submitting-and-reviewing).
+
+## Fediverse / AT Proto
+
+Each mirrored series can also speak ActivityPub: `@series@your-host` is followable from Mastodon, posting a note for every commit/issue/patch, with replies bridged back as real comments (see Comments above). A minimal AT Proto client can post the same to Bluesky. Both are off by default — set `public_host` in the config to turn ActivityPub on for a series.
 
 ## Requirements
 
