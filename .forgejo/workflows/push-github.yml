@@ -1,0 +1,17 @@
+name: push-github
+on:
+  push:
+    branches: [main]
+
+jobs:
+  mirror:
+    runs-on: linux-host
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: push to GitHub
+        run: |
+          set -e
+          git remote add github https://x-access-token:${{ secrets.GH_PUSH_TOKEN }}@github.com/jeanbaptiste/graft.git
+          git push github HEAD:main
