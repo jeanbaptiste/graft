@@ -261,9 +261,3 @@ Both checks against it (the onboarding forms' optional field, and the pending-re
 
 - **One-time secret share.** `POST /share/new` encrypts the input with AES-256-GCM, keyed from a passcode and the share's own random id together. Only the id's hash is stored — a database dump alone can't derive the key. `GET/POST /share/<id>` claims it: right passcode reveals it once and deletes the record; 5 wrong passcodes deletes it too; 15 minutes unclaimed and it's gone.
 - **QR code.** `/share/<id>/qr.png` encodes the claim link only, not the passcode.
-
-**Not built:**
-
-- **Wormhole-style PAKE exchange** (the protocol behind [`magic-wormhole`](https://github.com/magic-wormhole/magic-wormhole)): both sides type the same short code into a CLI; the key exchange derives a shared secret without the code or the token crossing the wire in the clear. `graft`'s server never sees the plaintext token. Most to build — a relay endpoint for the handshake, shell access on both sides. Skipped: the share page above covers the same case at a fraction of the cost.
-
-- **Skip the handoff entirely.** If Forgejo exposes a delegated token-creation flow (peer admin clicks a link, logs into their own Forgejo, a token scoped to exactly `write:repository` + `write:issue` on exactly that repo is minted and handed to `graft` server-to-server), no plaintext secret touches a clipboard, a chat window, or a QR code. Depends on Forgejo's OAuth2/application-token APIs supporting delegated, scope-limited minting driven by a third party — unverified against a current Forgejo instance.
