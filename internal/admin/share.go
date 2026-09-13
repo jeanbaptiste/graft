@@ -115,13 +115,13 @@ func (h *Handler) shareBaseURL(r *http.Request) string {
 
 var shareNewTmpl = template.Must(template.New("share-new").Parse(`
 <h1>Share a secret, once</h1>
-<p class="lead">Paste a token or anything else sensitive below. You'll get back a one-time link and a separate 6-digit passcode — hand the link and the passcode to the recipient over two <em>different</em> channels (a link over chat, the passcode read aloud on a call, say), so intercepting one alone is useless. The secret is encrypted, shown to the recipient exactly once, and then destroyed — including if they enter the wrong passcode five times.</p>
+<p class="lead">Encrypts the text below. Returns a one-time link and a separate 6-digit passcode. Send them over two different channels. Destroyed on first successful claim, after 5 wrong passcodes, or after 15 minutes.</p>
 {{if .Error}}<div class="notice bad">{{.Error}}</div>{{end}}
 <div class="card">
   <form method="POST" action="/share/new">
     <label for="secret">Secret</label>
     <textarea id="secret" name="secret" required maxlength="8000" placeholder="the token, pasted as-is"></textarea>
-    <div class="hint">Never stored in reversible form without a passcode only the recipient will have.</div>
+    <div class="hint">Stored encrypted. The passcode required to decrypt it is never stored.</div>
     <button type="submit">Create one-time link</button>
   </form>
 </div>
@@ -129,21 +129,21 @@ var shareNewTmpl = template.Must(template.New("share-new").Parse(`
 
 var shareCreatedTmpl = template.Must(template.New("share-created").Parse(`
 <h1>Share created</h1>
-<div class="notice good">This is the only time both the link and passcode are shown together. Send them to the recipient now, over two separate channels.</div>
+<div class="notice good">Link and passcode shown together only this once. Send them over two separate channels.</div>
 <div class="card">
   <label>One-time link</label>
   <div class="secret-box"><a href="{{.URL}}">{{.URL}}</a></div>
   <label>Passcode</label>
   <div class="passcode">{{.Passcode}}</div>
-  <label>QR code (opens the link — the recipient still enters the passcode by hand)</label>
+  <label>QR code (link only — passcode still entered by hand)</label>
   <div style="text-align:center;margin-top:.5rem;"><img src="/share/{{.ID}}/qr.png" width="200" height="200" alt="QR code for the one-time link"></div>
-  <div class="hint">Expires in 15 minutes if never claimed. Claimed exactly once — a second visit shows nothing.</div>
+  <div class="hint">Expires in 15 minutes if unclaimed. One claim only.</div>
 </div>
 `))
 
 var shareClaimTmpl = template.Must(template.New("share-claim").Parse(`
 <h1>Claim a shared secret</h1>
-<p class="lead">Enter the 6-digit passcode you were given separately from this link. It can only be tried a handful of times before the secret is destroyed.</p>
+<p class="lead">Enter the 6-digit passcode. Limited attempts before the secret is destroyed.</p>
 {{if .Error}}<div class="notice bad">{{.Error}}</div>{{end}}
 <div class="card">
   <form method="POST" action="/share/{{.ID}}">
@@ -156,7 +156,7 @@ var shareClaimTmpl = template.Must(template.New("share-claim").Parse(`
 
 var shareRevealedTmpl = template.Must(template.New("share-revealed").Parse(`
 <h1>Secret</h1>
-<div class="notice good">Shown once. It's already deleted — copy it now, this page won't show it again on refresh.</div>
+<div class="notice good">Shown once. Copy it now.</div>
 <div class="card">
   <div class="secret-box">{{.Secret}}</div>
 </div>

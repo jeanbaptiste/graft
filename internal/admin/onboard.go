@@ -20,7 +20,7 @@ var validName = regexp.MustCompile(`^[a-zA-Z0-9._-]{1,80}$`)
 
 var addPeerTmpl = template.Must(template.New("add-peer").Parse(`
 <h1>Add a peer to an existing federation</h1>
-<p class="lead">A new Forgejo instance joining a repo that's already mirrored elsewhere. It reuses the federation's existing Radicle side automatically — Radicle already replicates to it — so nothing about Radicle needs to be entered here.</p>
+<p class="lead">Joins a Forgejo instance to a repo already mirrored elsewhere. Radicle side (RID, node, explorer) is inherited from the chosen series — not entered here.</p>
 {{if .Error}}<div class="notice bad">{{.Error}}</div>{{end}}
 <div class="card">
   <form method="POST" action="/add-peer">
@@ -29,7 +29,6 @@ var addPeerTmpl = template.Must(template.New("add-peer").Parse(`
       <option value="">— choose —</option>
       {{range .Series}}<option value="{{.}}" {{if eq . $.SelectedSeries}}selected{{end}}>{{.}}</option>{{end}}
     </select>
-    <div class="hint">The RID, Radicle node and explorer this peer joins are inherited from the series you pick.</div>
 
     <label for="name">Pair name</label>
     <input type="text" id="name" name="name" required maxlength="80" pattern="[a-zA-Z0-9._-]+" value="{{.Name}}" placeholder="e.g. federation-x-gitadmin">
@@ -46,10 +45,11 @@ var addPeerTmpl = template.Must(template.New("add-peer").Parse(`
     </div>
     <label for="repo">Repository</label>
     <input type="text" id="repo" name="repo" required value="{{.Repo}}">
+    <div class="hint">Create this repo empty on the peer — no auto-init. An auto-init commit diverges from the federation's history and blocks the sync.</div>
 
     <label for="token">Forgejo token</label>
     <textarea id="token" name="token" required placeholder="scoped to write:repository + write:issue"></textarea>
-    <div class="hint">Written to its own chmod-600 file on save — never kept in this form or logged. Got it from someone else safely? See <a href="/share/new">one-time share</a>.</div>
+    <div class="hint">Written to its own chmod-600 file on save. Not kept in this form, not logged. From a third party: use <a href="/share/new">one-time share</a>.</div>
 
     <label>Sync scope</label>
     <div class="checks">
@@ -60,7 +60,7 @@ var addPeerTmpl = template.Must(template.New("add-peer").Parse(`
 
     <label for="password">Admin password</label>
     <input type="password" id="password" name="password" required autocomplete="off">
-    <div class="hint">Confirms this addition is authorized. Active within one sync interval once accepted.</div>
+    <div class="hint">Active within one sync interval. No restart.</div>
 
     <button type="submit">Add peer</button>
   </form>
@@ -69,12 +69,12 @@ var addPeerTmpl = template.Must(template.New("add-peer").Parse(`
 
 var newRepoTmpl = template.Must(template.New("new-repo").Parse(`
 <h1>Start a new repo</h1>
-<p class="lead">Mirroring a repo graft has never seen before, on both a Forgejo instance and a Radicle node.</p>
+<p class="lead">Mirrors a repo on a new Forgejo instance and a new Radicle node.</p>
 <ol class="steps">
-  <li>On your Forgejo instance, create the repo (give it one initial commit) and generate a token scoped to <code>write:repository</code> + <code>write:issue</code>.</li>
-  <li>Clone it locally and run <code>rad init --name &lt;repo&gt; --default-branch &lt;branch&gt; --public</code> — note the RID it prints (<code>rad:z...</code>).</li>
-  <li>If other Radicle nodes should also carry it, tell them to <code>rad seed &lt;rid&gt;</code>.</li>
-  <li>Fill in what you just created below.</li>
+  <li>On the Forgejo instance: create the repo with one initial commit. Generate a token scoped to <code>write:repository</code> + <code>write:issue</code>.</li>
+  <li>Clone it locally. Run <code>rad init --name &lt;repo&gt; --default-branch &lt;branch&gt; --public</code>. Note the RID (<code>rad:z...</code>).</li>
+  <li>To replicate to other Radicle nodes: <code>rad seed &lt;rid&gt;</code> on each.</li>
+  <li>Fill in the form below.</li>
 </ol>
 {{if .Error}}<div class="notice bad">{{.Error}}</div>{{end}}
 <div class="card">
@@ -128,7 +128,7 @@ var newRepoTmpl = template.Must(template.New("new-repo").Parse(`
 
 var onboardOKTmpl = template.Must(template.New("onboard-ok").Parse(`
 <h1>{{.Title}}</h1>
-<div class="notice good">{{.Name}} is saved and will start mirroring within the next sync interval — no restart needed.</div>
+<div class="notice good">{{.Name}} saved. Active within one sync interval. No restart.</div>
 <p><a class="nav-link" href="/">&larr; Back to the dashboard</a></p>
 `))
 

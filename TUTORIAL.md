@@ -46,15 +46,15 @@ chown graft:graft /etc/graft/my-project.token   # the user graft actually runs a
 
 ### Sharing a token safely
 
-The token never belongs in `config.yaml` — only its file path does (`token_file`). The token itself lives in its own `chmod 600` file, owned by the user `graft` runs as. That much is enforced by `graft` itself (`config.Load` requires `token_file`, never accepts an inline value). Getting the token *into* that file safely is on you — a few rules:
+`config.yaml` never holds the token itself, only `token_file`. `graft` requires `token_file` and rejects an inline value. Getting the token into that file is on you:
 
-- **Scope it down.** `write:repository` + `write:issue` only — never an admin or org-wide token. A leaked scoped token can only touch the one repo it was made for.
-- **Never paste it into chat, email, or a ticket.** All three are permanently searchable logs the moment the secret lands in them, long after anyone remembers it's still live there.
-- **Prefer the peer's own hands on the keyboard.** The person who owns the Forgejo instance generates the token and writes it directly into `/etc/graft/<name>.token` themselves, over their own SSH session — it never transits through a third party (including you) at all.
-- **When a third party must relay it, use something that dies after one read** — a password manager's one-time-share feature (Bitwarden Send, 1Password Psst), or a self-hosted equivalent (`onetimesecret.com` is open source and self-hostable). Never a plain link with no expiry.
-- **Rotate it if you're ever unsure it stayed private** — regenerating a Forgejo token is free; guessing whether a six-month-old paste is still up is not.
+- Scope it to `write:repository` + `write:issue`. Never admin or org-wide.
+- Never paste it into chat, email, or a ticket.
+- Prefer the token owner writing it directly into `/etc/graft/<name>.token` over their own SSH session — no third party involved.
+- If a third party must relay it, use a one-time-secret tool (Bitwarden Send, 1Password Psst, self-hosted `onetimesecret.com`), not a plain link.
+- Rotate it if its exposure is ever in doubt.
 
-See [Built-in token exchange](#built-in-token-exchange) at the bottom — `graft` now has a one-time secret-share page for exactly this.
+See [Built-in token exchange](#built-in-token-exchange) — `graft` has a one-time secret-share page for this.
 
 ## 3. Create the repo on Forgejo
 
@@ -138,16 +138,16 @@ It now mirrors both repos every `sync_interval`, in both directions, on its own.
 
 ## Adding a peer to an existing federation
 
-Once `my-project` is mirrored between one Forgejo and one Radicle node, adding a second Forgejo instance to the same repo — a genuine federation, not just a pair — needs neither a new Radicle node nor any change to the two pairs already running.
+Adding a second Forgejo instance to a repo already mirrored between one Forgejo and one Radicle node needs no new Radicle node and no change to the pairs already running.
 
 | Placeholder | Stands for |
 |---|---|
 | `git2.example.org` | the second Forgejo instance |
 | `bob` | the account on it that owns the mirrored repo |
 
-**The one thing worth understanding first**: a Radicle repository (a RID) already replicates to every Radicle node that seeds it, automatically, regardless of `graft`. Pointing a second Forgejo pair's `radicle.http_base_url` at the *same* seed you're already using doesn't create a new relationship — that seed already has the content. Nothing to do on the Radicle side at all for this case; skip straight to the config.
+A Radicle RID replicates to every node that seeds it, independent of `graft`. Pointing a second pair's `radicle.http_base_url` at the same seed already in use doesn't create a new relationship — that seed already has the content. No Radicle-side step for this case.
 
-1. On `git2.example.org`, create the repo (`auto_init: true`, same default branch) and a token, exactly as in step 2–3 above, scoped `write:repository` + `write:issue`, saved to its own file:
+1. On `git2.example.org`, create the repo **without** `auto_init` (`auto_init: false` or omitted) and a token scoped `write:repository` + `write:issue`. `auto_init: true` gives the repo an unrelated first commit; `graft` sees that as a real divergence against the federation's existing history and refuses to push, logging "forgejo and rad diverged since last sync" (see Troubleshooting). An empty repo has no history to diverge from.
 
    ```sh
    echo "$TOKEN2" > /etc/graft/my-project-git2.token
@@ -191,18 +191,18 @@ Once `my-project` is mirrored between one Forgejo and one Radicle node, adding a
 
 3. Restart: `sudo systemctl restart graft`. `config.Load` validates every field on startup — a typo surfaces immediately in the logs, not as a silent no-op.
 
-4. Confirm: the status dashboard now shows `git2.example.org` as a second row under `my-project`. If it joined an already-active federation, its side may show cells colored differently from a normal commit/issue/patch — "source" (this is where content first entered the federation) or "replicated" (this side holds it without `graft` ever having logged a push here itself, because Radicle's own gossip — or a Forgejo Authorized Integration — got there first). Hover one for the date, the original side, and a link.
+4. Confirm: the dashboard shows `git2.example.org` as a second row under `my-project`. A side with content but no direct push logged by `graft` shows colored cells instead of a normal commit/issue/patch cell — "source" (content originated here) or "replicated" (arrived via Radicle gossip or a Forgejo Authorized Integration, not a `graft`-logged push). Hover for date, origin, link.
 
 ## Adding a brand-new Radicle node to the mesh
 
-Reusing an existing seed (above) needs nothing extra. Standing up a node nobody in the mesh has ever talked to is a two-step manual bootstrap — `graft`'s own Radicle node (`rad_home`) doesn't discover new peers on its own:
+Reusing an existing seed needs nothing extra. A node nobody in the mesh has talked to needs two manual steps — `graft`'s own Radicle node doesn't discover new peers on its own:
 
 ```sh
 rad node connect <new-node-id>@<new-node-address>:8776
 rad seed rad:z3gqcJUoA1n9HaHKufZs5FCSGazv5
 ```
 
-Both matter. `rad node connect` is the first handshake — Radicle's peer discovery (`"peers": {"type": "dynamic"}` in `~/.radicle/config.json`) spreads pairs it already knows about, but a node nobody is yet connected to needs one explicit introduction. `rad seed` matters separately: a Radicle node's default seeding policy is to replicate *nothing* it isn't explicitly told to — being connected doesn't imply seeding. Skip either step and the new node stays either unreachable or silently empty.
+`rad node connect` is the first handshake — Radicle's peer discovery (`"peers": {"type": "dynamic"}` in `~/.radicle/config.json`) spreads pairs it already knows, but a never-connected node needs one explicit introduction. `rad seed` is separate: default seeding policy replicates nothing not explicitly told to. Skip either step and the node stays unreachable or empty.
 
 ## Troubleshooting
 
@@ -216,25 +216,23 @@ Both matter. `rad node connect` is the first handshake — Radicle's peer discov
 
 ## Self-service dashboard actions
 
-The dashboard (next to the federation heatmap) has two buttons and a footer link that do the manual work above through a browser instead:
+Two buttons next to the federation heatmap, plus a footer link, do the above through a browser:
 
-- **`+ Add peer`** (`/add-peer`) — join an existing series. Pick the federation from a dropdown; its Radicle side (RID, seed, explorer) is filled in automatically, never asked for — see "Adding a peer to an existing federation" above for why that's always safe. Paste the new peer's Forgejo details and token, confirm with the admin password, done. Live within one `sync_interval`, no restart.
-- **`+ New repo`** (`/new-repo`) — the "Adding a brand-new Radicle node" + fresh-repo path, as an inline onboarding page: it spells out the manual prerequisites (create the Forgejo repo, generate a scoped token, `rad init`, note the RID) and then takes a form with everything once you've done them.
-- **`Share a secret, once`** (`/share/new`, footer link) — the one-time-secret page from the list below. Anyone can create a share (it's the mechanism *for* someone who isn't the admin to safely hand a token over); only claiming requires the passcode.
+- **`+ Add peer`** (`/add-peer`) — join an existing series. Radicle side (RID, seed, explorer) is filled in from the chosen series, not asked for. Repo must exist on the peer, empty (no auto-init — see above). Submit Forgejo details, token, admin password. Live within one `sync_interval`.
+- **`+ New repo`** (`/new-repo`) — prerequisites listed inline (create the Forgejo repo, generate a scoped token, `rad init`, note the RID), then a form.
+- **`Share a secret, once`** (`/share/new`, footer) — the one-time-secret page below. Creating a share needs no password; claiming needs the passcode.
 
-Both onboarding forms are gated by `admin_password` in `config.yaml` (defaults to `graft` — `graft` logs a warning at startup if it's still set to that; change it). Checked in constant time, rate-limited (5 wrong attempts per IP or 20 total across all IPs, per 15 minutes) — a wrong guess never reveals which field was wrong, and the limiter, not the password's strength, is what actually stands between a stranger and brute-forcing a short shared secret.
+Both onboarding forms check `admin_password` from `config.yaml` (default `graft`; `graft` logs a startup warning if unchanged). Constant-time comparison, rate-limited: 5 wrong attempts per IP or 20 total, per 15 minutes.
 
 ## Built-in token exchange
 
-Two of the ideas from the token-sharing menu below are live; the rest are recorded for when they're worth it.
+**Built**, reachable from the dashboard:
 
-**Built**, both reachable from the dashboard (see above):
-
-- **One-time secret share.** `POST /share/new` encrypts whatever's pasted (AES-256-GCM), keyed from a passcode *and* the share's own random id together — the id is never stored in reversible form, only its hash, so a full database dump alone can never derive the key. `GET/POST /share/<id>` claims it: right passcode reveals it once and destroys the record immediately; five wrong passcodes destroy it too, fail-closed; 15 minutes unclaimed and it's gone regardless.
-- **QR code.** `/share/<id>/qr.png` — encodes the claim link only, not the passcode (still meant to travel over a separate channel); a convenience for scanning off someone's screen on a call rather than copy-pasting a link.
+- **One-time secret share.** `POST /share/new` encrypts the input with AES-256-GCM, keyed from a passcode and the share's own random id together. Only the id's hash is stored — a database dump alone can't derive the key. `GET/POST /share/<id>` claims it: right passcode reveals it once and deletes the record; 5 wrong passcodes deletes it too; 15 minutes unclaimed and it's gone.
+- **QR code.** `/share/<id>/qr.png` encodes the claim link only, not the passcode.
 
 **Not built:**
 
-- **A wormhole-style PAKE exchange** (the protocol behind [`magic-wormhole`](https://github.com/magic-wormhole/magic-wormhole)): both admins type the same short human-readable code into a small CLI, and a key exchange derives a shared secret from the code without either the code or the token ever crossing the wire in the clear — `graft`'s own server, even if fully compromised, never sees the plaintext token at any point. The strongest guarantee here, and the most to build (a relay endpoint speaking the handshake, and both sides need shell access rather than just a browser). Deliberately skipped for now: the one-time-share page above already closes the gap it was meant to close, at a fraction of the engineering cost, and re-litigating that trade only makes sense if token handoffs become frequent enough that the share page's residual risk (a compromised link *and* a brute-forced passcode, however rate-limited) stops being acceptable.
+- **Wormhole-style PAKE exchange** (the protocol behind [`magic-wormhole`](https://github.com/magic-wormhole/magic-wormhole)): both sides type the same short code into a CLI; the key exchange derives a shared secret without the code or the token crossing the wire in the clear. `graft`'s server never sees the plaintext token. Most to build — a relay endpoint for the handshake, shell access on both sides. Skipped: the share page above covers the same case at a fraction of the cost.
 
-- **Skip the handoff entirely.** The most elegant fix doesn't share a secret better — it avoids minting a long-lived one a human has to move at all. If Forgejo ever exposes a delegated token-creation flow (the peer's admin clicks a link, logs into *their own* Forgejo, and a token scoped to exactly `write:repository` + `write:issue` on exactly that repo is minted and handed to `graft` server-to-server), no plaintext secret ever needs to touch a clipboard, a chat window, or a QR code in the first place. This is genuinely the right long-term direction — everything built above, share page included, is a workaround for a token having to exist as a string a human copies, and this is the only option that makes that string never exist. It isn't built because it depends on Forgejo's own OAuth2/application-token APIs supporting a delegated, scope-limited minting flow that a third party can drive — worth checking directly against a current Forgejo instance before investing in it, since the answer decides whether this is a small integration or a real feature request upstream.
+- **Skip the handoff entirely.** If Forgejo exposes a delegated token-creation flow (peer admin clicks a link, logs into their own Forgejo, a token scoped to exactly `write:repository` + `write:issue` on exactly that repo is minted and handed to `graft` server-to-server), no plaintext secret touches a clipboard, a chat window, or a QR code. Depends on Forgejo's OAuth2/application-token APIs supporting delegated, scope-limited minting driven by a third party — unverified against a current Forgejo instance.
