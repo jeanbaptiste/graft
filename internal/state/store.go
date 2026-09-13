@@ -327,6 +327,11 @@ type Activity struct {
 const (
 	ForgejoToRadicle = "forgejo_to_radicle"
 	RadicleToForgejo = "radicle_to_forgejo"
+	// ForgejoAToForgejoB and ForgejoBToForgejoA are for Radicle-less pairs
+	// (config.RepoPair.ForgejoMirror): "a" is pair.Forgejo, "b" is
+	// pair.ForgejoMirror.
+	ForgejoAToForgejoB = "forgejo_a_to_forgejo_b"
+	ForgejoBToForgejoA = "forgejo_b_to_forgejo_a"
 )
 
 // LogActivity records one Activity and returns its new row id — used by

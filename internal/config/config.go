@@ -28,13 +28,20 @@ type Config struct {
 	AdminPassword string `yaml:"admin_password"`
 }
 
-// RepoPair links one Forgejo repository to one Radicle repository and
-// declares which content types are kept in sync between them.
+// RepoPair links one Forgejo repository to either one Radicle repository or
+// a second Forgejo repository, and declares which content types are kept in
+// sync between them. Exactly one of Radicle and ForgejoMirror is set: the
+// Radicle case is the original, fully-featured pairing (git, issues,
+// patches); the ForgejoMirror case is a plain Forgejo-to-Forgejo git mirror
+// for series that have no Radicle side at all — issues and patches aren't
+// supported there yet, since that mirroring logic is written entirely in
+// terms of a Radicle client (see internal/sync/issues.go, patches.go).
 type RepoPair struct {
-	Name    string        `yaml:"name"`
-	Forgejo ForgejoTarget `yaml:"forgejo"`
-	Radicle RadicleTarget `yaml:"radicle"`
-	Sync    SyncScope     `yaml:"sync"`
+	Name          string         `yaml:"name"`
+	Forgejo       ForgejoTarget  `yaml:"forgejo"`
+	Radicle       *RadicleTarget `yaml:"radicle"`
+	ForgejoMirror *ForgejoTarget `yaml:"forgejo_mirror"`
+	Sync          SyncScope      `yaml:"sync"`
 	// Series groups this pair with others that mirror the same underlying
 	// repository (one per forge/Radicle side) under one row in the status
 	// dashboard. Defaults to Name — i.e. its own row — if unset.
@@ -134,14 +141,33 @@ func (r RepoPair) validate() error {
 	if r.Forgejo.TokenFile == "" {
 		return fmt.Errorf("forgejo.token_file is required")
 	}
-	if r.Radicle.RID == "" {
-		return fmt.Errorf("radicle.rid is required")
+	if r.Radicle == nil && r.ForgejoMirror == nil {
+		return fmt.Errorf("exactly one of radicle or forgejo_mirror is required")
 	}
-	if r.Radicle.HTTPBaseURL == "" {
-		return fmt.Errorf("radicle.http_base_url is required")
+	if r.Radicle != nil && r.ForgejoMirror != nil {
+		return fmt.Errorf("radicle and forgejo_mirror are mutually exclusive")
 	}
-	if r.Radicle.RadHome == "" {
-		return fmt.Errorf("radicle.rad_home is required")
+	if r.Radicle != nil {
+		if r.Radicle.RID == "" {
+			return fmt.Errorf("radicle.rid is required")
+		}
+		if r.Radicle.HTTPBaseURL == "" {
+			return fmt.Errorf("radicle.http_base_url is required")
+		}
+		if r.Radicle.RadHome == "" {
+			return fmt.Errorf("radicle.rad_home is required")
+		}
+	}
+	if r.ForgejoMirror != nil {
+		if r.ForgejoMirror.BaseURL == "" || r.ForgejoMirror.Owner == "" || r.ForgejoMirror.Repo == "" {
+			return fmt.Errorf("forgejo_mirror.base_url, owner and repo are required")
+		}
+		if r.ForgejoMirror.TokenFile == "" {
+			return fmt.Errorf("forgejo_mirror.token_file is required")
+		}
+		if r.Sync.Issues || r.Sync.Patches {
+			return fmt.Errorf("forgejo_mirror pairs only support sync.git — issues/patches mirroring needs a Radicle side")
+		}
 	}
 	if !r.Sync.Git && !r.Sync.Issues && !r.Sync.Patches {
 		return fmt.Errorf("at least one of sync.git, sync.issues, sync.patches must be true")

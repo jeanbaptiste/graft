@@ -20,6 +20,7 @@ type RepoSyncer struct {
 	forgejo *forgejo.Client
 	radicle *radicle.Client
 	git     *GitSyncer
+	gitFF   *GitSyncerFF // set instead of git when pair.ForgejoMirror is used
 	issues  *IssueSyncer
 	patches *PatchSyncer
 }
@@ -38,20 +39,13 @@ func New(pair config.RepoPair, st *state.Store, workDir string) (*RepoSyncer, er
 		return nil, fmt.Errorf("resolve forgejo repository: %w", err)
 	}
 
-	rc := radicle.New(pair.Radicle.HTTPBaseURL, pair.Radicle.RID, pair.Radicle.RadHome, "rad")
-
-	rs := &RepoSyncer{pair: pair, forgejo: fc, radicle: rc}
+	rs := &RepoSyncer{pair: pair, forgejo: fc}
 
 	forgejoWebURL := strings.TrimRight(pair.Forgejo.BaseURL, "/") + "/" + pair.Forgejo.Owner + "/" + pair.Forgejo.Repo
-	radicleWebURL := RadicleExplorerLink(pair.Radicle)
 
 	series := pair.Series
 	if series == "" {
 		series = pair.Name
-	}
-	seriesURL := radicleWebURL
-	if seriesURL == "" {
-		seriesURL = forgejoWebURL
 	}
 
 	var bluesky *BlueskyPoster
@@ -65,6 +59,45 @@ func New(pair config.RepoPair, st *state.Store, workDir string) (*RepoSyncer, er
 			AppPassword: appPassword,
 			PDSHost:     pair.Bluesky.PDSHost,
 		}
+	}
+
+	if pair.ForgejoMirror != nil {
+		mirrorToken, err := config.ReadToken(pair.ForgejoMirror.TokenFile)
+		if err != nil {
+			return nil, err
+		}
+		mfc := forgejo.New(pair.ForgejoMirror.BaseURL, pair.ForgejoMirror.Owner, pair.ForgejoMirror.Repo, mirrorToken)
+		mrepo, err := mfc.GetRepository()
+		if err != nil {
+			return nil, fmt.Errorf("resolve forgejo_mirror repository: %w", err)
+		}
+		mirrorWebURL := strings.TrimRight(pair.ForgejoMirror.BaseURL, "/") + "/" + pair.ForgejoMirror.Owner + "/" + pair.ForgejoMirror.Repo
+
+		if pair.Sync.Git {
+			rs.gitFF = &GitSyncerFF{
+				RepoPair:      pair.Name,
+				WorkDir:       workDir,
+				AURL:          authenticatedCloneURL(repo.CloneURL, token),
+				AWebURL:       forgejoWebURL,
+				BURL:          authenticatedCloneURL(mrepo.CloneURL, mirrorToken),
+				BWebURL:       mirrorWebURL,
+				DefaultBranch: repo.DefaultBranch,
+				State:         st,
+				Series:        series,
+				SeriesURL:     forgejoWebURL,
+				Bluesky:       bluesky,
+			}
+		}
+		return rs, nil
+	}
+
+	rc := radicle.New(pair.Radicle.HTTPBaseURL, pair.Radicle.RID, pair.Radicle.RadHome, "rad")
+	rs.radicle = rc
+
+	radicleWebURL := RadicleExplorerLink(*pair.Radicle)
+	seriesURL := radicleWebURL
+	if seriesURL == "" {
+		seriesURL = forgejoWebURL
 	}
 
 	if pair.Sync.Git || pair.Sync.Patches {
@@ -150,6 +183,9 @@ func (rs *RepoSyncer) SetAuthorizedIntegrationSource(host string) {
 	if rs.git != nil {
 		rs.git.AuthorizedIntegrationSource = host
 	}
+	if rs.gitFF != nil {
+		rs.gitFF.AuthorizedIntegrationSource = host
+	}
 }
 
 // HasAuthorizedIntegrationSource reports whether this pair's Forgejo side
@@ -158,7 +194,10 @@ func (rs *RepoSyncer) SetAuthorizedIntegrationSource(host string) {
 // startup) — used by the dashboard to explain why this side shows no
 // graft-logged events even though it holds the mirrored content.
 func (rs *RepoSyncer) HasAuthorizedIntegrationSource() bool {
-	return rs.git != nil && rs.git.AuthorizedIntegrationSource != ""
+	if rs.git != nil && rs.git.AuthorizedIntegrationSource != "" {
+		return true
+	}
+	return rs.gitFF != nil && rs.gitFF.AuthorizedIntegrationSource != ""
 }
 
 // Series is the dashboard row this pair's activity groups under: its
@@ -229,6 +268,11 @@ func (rs *RepoSyncer) Run(log *slog.Logger) (gitErr, issuesErr, patchErr error) 
 
 	if rs.git != nil {
 		if gitErr = rs.git.Sync(); gitErr != nil {
+			log.Error("git sync failed", "err", gitErr)
+		}
+	}
+	if rs.gitFF != nil {
+		if gitErr = rs.gitFF.Sync(); gitErr != nil {
 			log.Error("git sync failed", "err", gitErr)
 		}
 	}

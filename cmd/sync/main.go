@@ -58,8 +58,11 @@ func main() {
 		}
 	}
 	defaultRadHome := ""
-	if len(cfg.Repos) > 0 {
-		defaultRadHome = cfg.Repos[0].Radicle.RadHome
+	for _, p := range cfg.Repos {
+		if p.Radicle != nil {
+			defaultRadHome = p.Radicle.RadHome
+			break
+		}
 	}
 
 	// live holds every piece of runtime state a dynamically-added peer or
@@ -300,12 +303,13 @@ func (l *liveState) seriesInfos() []admin.SeriesInfo {
 			series = p.Name
 		}
 		if _, ok := seen[series]; !ok {
-			seen[series] = admin.SeriesInfo{
-				Name:               series,
-				RadicleRID:         p.Radicle.RID,
-				RadicleHTTPBaseURL: p.Radicle.HTTPBaseURL,
-				RadicleExplorerURL: p.Radicle.ExplorerURL,
+			info := admin.SeriesInfo{Name: series}
+			if p.Radicle != nil {
+				info.RadicleRID = p.Radicle.RID
+				info.RadicleHTTPBaseURL = p.Radicle.HTTPBaseURL
+				info.RadicleExplorerURL = p.Radicle.ExplorerURL
 			}
+			seen[series] = info
 			order = append(order, series)
 		}
 	}
@@ -324,7 +328,7 @@ func dynamicRepoToPair(d state.DynamicRepo) config.RepoPair {
 		Forgejo: config.ForgejoTarget{
 			BaseURL: d.ForgejoBaseURL, Owner: d.ForgejoOwner, Repo: d.ForgejoRepo, TokenFile: d.ForgejoTokenFile,
 		},
-		Radicle: config.RadicleTarget{
+		Radicle: &config.RadicleTarget{
 			RID: d.RadicleRID, HTTPBaseURL: d.RadicleHTTPBaseURL, RadHome: d.RadicleRadHome, ExplorerURL: d.RadicleExplorerURL,
 		},
 		Sync: config.SyncScope{Git: d.SyncGit, Issues: d.SyncIssues, Patches: d.SyncPatches},
@@ -445,11 +449,21 @@ func buildTopology(pairs []config.RepoPair, aiTargetHosts map[string]map[string]
 		fURL := strings.TrimRight(pair.Forgejo.BaseURL, "/") + "/" + pair.Forgejo.Owner + "/" + pair.Forgejo.Repo
 		add(series, fHost, fURL, pair.Name, false, aiTargetHosts[series][fHost])
 
-		rHost := ""
-		if u, err := url.Parse(pair.Radicle.HTTPBaseURL); err == nil {
-			rHost = u.Host
+		if pair.Radicle != nil {
+			rHost := ""
+			if u, err := url.Parse(pair.Radicle.HTTPBaseURL); err == nil {
+				rHost = u.Host
+			}
+			add(series, rHost, gsync.RadicleExplorerLink(*pair.Radicle), pair.Name, true, false)
 		}
-		add(series, rHost, gsync.RadicleExplorerLink(pair.Radicle), pair.Name, true, false)
+		if pair.ForgejoMirror != nil {
+			mHost := ""
+			if u, err := url.Parse(pair.ForgejoMirror.BaseURL); err == nil {
+				mHost = u.Host
+			}
+			mURL := strings.TrimRight(pair.ForgejoMirror.BaseURL, "/") + "/" + pair.ForgejoMirror.Owner + "/" + pair.ForgejoMirror.Repo
+			add(series, mHost, mURL, pair.Name, false, aiTargetHosts[series][mHost])
+		}
 	}
 	return topology
 }
