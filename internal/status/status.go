@@ -32,6 +32,22 @@ func (r PairResult) ok() bool {
 	return r.GitError == "" && r.IssuesError == "" && r.PatchError == ""
 }
 
+// errText joins whichever scopes actually failed on this pair's last pass
+// into one tooltip-sized message. Empty if the pass was clean.
+func (r PairResult) errText() string {
+	var parts []string
+	if r.GitError != "" {
+		parts = append(parts, "git: "+r.GitError)
+	}
+	if r.IssuesError != "" {
+		parts = append(parts, "issues: "+r.IssuesError)
+	}
+	if r.PatchError != "" {
+		parts = append(parts, "patches: "+r.PatchError)
+	}
+	return strings.Join(parts, " | ")
+}
+
 // ServerRef is one repo pair's declared mirror target — a specific Forgejo
 // instance or a specific Radicle node — as configured, regardless of
 // whether it has ever actually produced an event yet.
@@ -40,6 +56,7 @@ type ServerRef struct {
 	URL                   string // repo root on that host
 	Radicle               bool   // true if this side is a Radicle node
 	AuthorizedIntegration bool   // true if this Forgejo side receives pushes directly from another pair's Forgejo, bypassing graft
+	PairName              string // the config.RepoPair.Name this side belongs to — links a sub-row back to its PairResult for error surfacing
 }
 
 // Tracker holds the latest result per repo pair, safe for concurrent use,
@@ -162,10 +179,15 @@ func (t *Tracker) serveDashboard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	pairs := groupPairStatus(t.snapshot())
+	results := t.snapshot()
+	pairs := groupPairStatus(results)
 	health := make(map[string]bool, len(pairs))
 	for _, p := range pairs {
 		health[p.Name] = p.OK
+	}
+	pairResults := make(map[string]PairResult, len(results))
+	for _, r := range results {
+		pairResults[r.Name] = r
 	}
 
 	t.mu.Lock()
@@ -174,7 +196,7 @@ func (t *Tracker) serveDashboard(w http.ResponseWriter, r *http.Request) {
 	t.mu.Unlock()
 
 	data := dashboardData{
-		Series:        buildSeriesRows(entries, health, topology),
+		Series:        buildSeriesRows(entries, health, topology, pairResults),
 		Activity:      recentActivity(entries),
 		SourceURL:     t.sourceURL,
 		SocialEnabled: publicHost != "",
@@ -310,6 +332,11 @@ type subRow struct {
 	Label  string
 	URL    string
 	Events []event
+	// Error is set when this side's most recent sync pass actually
+	// failed — surfaced as a visible badge instead of a silently
+	// shorter row. A row with an Error never gets the synthetic
+	// alignment fill below: what you see is only what's confirmed.
+	Error string
 }
 
 // event is one heatmap cell, one tooltip, one link — either a real
@@ -410,12 +437,20 @@ func hostLabel(rawURL string) string {
 // Statuspage style: one full-width horizontal strip per series. Each entry
 // becomes its own cell, oldest first, so a busy day never hides events
 // behind one shared tooltip.
-func buildSeriesRows(entries []state.ActivityEntry, health map[string]bool, topology map[string][]ServerRef) []seriesRow {
+func buildSeriesRows(entries []state.ActivityEntry, health map[string]bool, topology map[string][]ServerRef, pairResults map[string]PairResult) []seriesRow {
 	type subAcc struct {
 		url     string
 		events  []state.ActivityEntry
 		radicle bool
 		ai      bool
+		// err is this side's live sync-error message (empty if its last
+		// pass was clean). Set from pairResults via the topology's
+		// PairName, so it reflects reality even before this side has
+		// ever logged an event of its own.
+		err string
+		// byKey indexes events by dedupKey — built once per side right
+		// before rendering, see buildSeriesRows.
+		byKey map[string]state.ActivityEntry
 	}
 	type seriesAcc struct {
 		subOrder []string
@@ -455,6 +490,9 @@ func buildSeriesRows(entries []state.ActivityEntry, health map[string]bool, topo
 			}
 			sub.radicle = ref.Radicle
 			sub.ai = ref.AuthorizedIntegration
+			if pr, ok := pairResults[ref.PairName]; ok {
+				sub.err = pr.errText()
+			}
 		}
 	}
 
@@ -520,38 +558,70 @@ func buildSeriesRows(entries []state.ActivityEntry, health map[string]bool, topo
 			return reps[repKeys[i]].entry.OccurredAt.Before(reps[repKeys[j]].entry.OccurredAt)
 		})
 
+		// byKey lets the render loop below ask "did this specific side log
+		// this specific event itself?" in O(1), so a real cell is used
+		// wherever one exists and a synthetic one only fills the gaps —
+		// never the other way around.
+		for _, sub := range sa.subs {
+			sub.byKey = make(map[string]state.ActivityEntry, len(sub.events))
+			for _, e := range sub.events {
+				sub.byKey[dedupKey(e.Kind, e.URL, e.Summary)] = e
+			}
+		}
+
 		subRows := make([]subRow, 0, len(subOrder))
 		for _, label := range subOrder {
 			sub := sa.subs[label]
-			if len(sub.events) == 0 && len(reps) > 0 {
-				cellState := "source"
-				if sub.ai || sub.radicle {
-					cellState = "replicated"
-				}
-				synth := make([]event, 0, len(repKeys))
-				for _, k := range repKeys {
-					r := reps[k]
-					synth = append(synth, event{
-						Kind:        r.entry.Kind,
-						Label:       kindLabel(r.entry.Kind),
-						Text:        r.entry.Summary,
-						URL:         reconstructLink(sub.url, r.entry.Kind, r.entry.URL),
-						Server:      label,
-						When:        r.entry.OccurredAt.Format("Mon, Jan 2, 15:04"),
-						State:       cellState,
-						OriginLabel: r.label,
-					})
-				}
-				subRows = append(subRows, subRow{Label: label, URL: sub.url, Events: synth})
+
+			if sub.err != "" {
+				// A side with a live sync error doesn't get the alignment
+				// fill below — showing it as "caught up" would hide the
+				// exact problem this dashboard exists to surface. What's
+				// rendered is only what this side has actually confirmed
+				// itself, so a real gap stays visible, backed by the
+				// error badge the template renders from subRow.Error.
+				es := make([]state.ActivityEntry, len(sub.events))
+				copy(es, sub.events)
+				sort.Slice(es, func(i, j int) bool { return es[i].OccurredAt.Before(es[j].OccurredAt) })
+				subRows = append(subRows, subRow{Label: label, URL: sub.url, Events: toEvents(es), Error: sub.err})
 				continue
 			}
 
-			// entries arrive newest-first (see ActivitySince); the
-			// heatmap reads left-to-right as oldest-to-newest.
-			es := make([]state.ActivityEntry, len(sub.events))
-			copy(es, sub.events)
-			sort.Slice(es, func(i, j int) bool { return es[i].OccurredAt.Before(es[j].OccurredAt) })
-			subRows = append(subRows, subRow{Label: label, URL: sub.url, Events: toEvents(es)})
+			if len(reps) == 0 {
+				subRows = append(subRows, subRow{Label: label, URL: sub.url})
+				continue
+			}
+
+			// A healthy side (no live error) always renders the full,
+			// series-wide set of distinct events in the same order, so
+			// two sides genuinely holding the same content always look
+			// identical — real cells wherever this side logged the event
+			// itself, synthetic ones filling in the rest (received via
+			// Radicle gossip, an Authorized Integration, or simply not
+			// the side that happened to get logged for that push).
+			cellState := "source"
+			if sub.ai || sub.radicle {
+				cellState = "replicated"
+			}
+			cells := make([]event, 0, len(repKeys))
+			for _, k := range repKeys {
+				if real, ok := sub.byKey[k]; ok {
+					cells = append(cells, toEvent(real))
+					continue
+				}
+				r := reps[k]
+				cells = append(cells, event{
+					Kind:        r.entry.Kind,
+					Label:       kindLabel(r.entry.Kind),
+					Text:        r.entry.Summary,
+					URL:         reconstructLink(sub.url, r.entry.Kind, r.entry.URL),
+					Server:      label,
+					When:        r.entry.OccurredAt.Format("Mon, Jan 2, 15:04"),
+					State:       cellState,
+					OriginLabel: r.label,
+				})
+			}
+			subRows = append(subRows, subRow{Label: label, URL: sub.url, Events: cells})
 		}
 
 		ok, known := health[name]
@@ -563,22 +633,26 @@ func buildSeriesRows(entries []state.ActivityEntry, health map[string]bool, topo
 	return rows
 }
 
+func toEvent(e state.ActivityEntry) event {
+	server := hostLabel(e.URL)
+	if server == "" {
+		server = serverLabel(e.RepoPair, e.Series)
+	}
+	return event{
+		Kind:   e.Kind,
+		Label:  kindLabel(e.Kind),
+		Text:   e.Summary,
+		URL:    e.URL,
+		Server: server,
+		When:   e.OccurredAt.Format("Mon, Jan 2, 15:04"),
+		Origin: originLabel(e.Origin),
+	}
+}
+
 func toEvents(es []state.ActivityEntry) []event {
 	out := make([]event, 0, len(es))
 	for _, e := range es {
-		server := hostLabel(e.URL)
-		if server == "" {
-			server = serverLabel(e.RepoPair, e.Series)
-		}
-		out = append(out, event{
-			Kind:   e.Kind,
-			Label:  kindLabel(e.Kind),
-			Text:   e.Summary,
-			URL:    e.URL,
-			Server: server,
-			When:   e.OccurredAt.Format("Mon, Jan 2, 15:04"),
-			Origin: originLabel(e.Origin),
-		})
+		out = append(out, toEvent(e))
 	}
 	return out
 }
@@ -789,6 +863,12 @@ var dashboardTmpl = template.Must(template.New("dashboard").Parse(`<!doctype htm
   }
   a.subrow-name { color: var(--brand); }
   a.subrow-name:hover { text-decoration: underline; }
+  .subrow-err {
+    flex: none; width: 10px; height: 10px; border-radius: 3px;
+    background: var(--bad); cursor: default; position: relative;
+  }
+  .subrow-err .tip { min-width: 16rem; white-space: normal; }
+  .subrow-err:hover .tip { display: block; }
   .days { display: flex; gap: 3px; flex-wrap: wrap; }
   .cell {
     flex: none; width: 10px; height: 22px; border-radius: 3px;
@@ -887,6 +967,9 @@ var dashboardTmpl = template.Must(template.New("dashboard").Parse(`<!doctype htm
         <div class="subrows">
         {{range .SubRows}}
           <div class="subrow">
+            {{if .Error}}
+            <span class="subrow-err"><div class="tip"><div class="tip-date">last pass failed</div><div class="tip-note">{{.Error}}</div></div></span>
+            {{end}}
             {{if .URL}}
             <a class="subrow-name" href="{{.URL}}" target="_blank" rel="noopener">{{.Label}}</a>
             {{else}}

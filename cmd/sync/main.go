@@ -414,7 +414,7 @@ func blueskyConfigured(repos []config.RepoPair) map[string]bool {
 func buildTopology(pairs []config.RepoPair, aiTargetHosts map[string]map[string]bool) map[string][]status.ServerRef {
 	topology := map[string][]status.ServerRef{}
 	seen := map[string]bool{}
-	add := func(series, host, repoURL string, radicle, ai bool) {
+	add := func(series, host, repoURL, pairName string, radicle, ai bool) {
 		if host == "" {
 			return
 		}
@@ -428,6 +428,7 @@ func buildTopology(pairs []config.RepoPair, aiTargetHosts map[string]map[string]
 			URL:                   repoURL,
 			Radicle:               radicle,
 			AuthorizedIntegration: ai,
+			PairName:              pairName,
 		})
 	}
 
@@ -442,13 +443,13 @@ func buildTopology(pairs []config.RepoPair, aiTargetHosts map[string]map[string]
 			fHost = u.Host
 		}
 		fURL := strings.TrimRight(pair.Forgejo.BaseURL, "/") + "/" + pair.Forgejo.Owner + "/" + pair.Forgejo.Repo
-		add(series, fHost, fURL, false, aiTargetHosts[series][fHost])
+		add(series, fHost, fURL, pair.Name, false, aiTargetHosts[series][fHost])
 
 		rHost := ""
 		if u, err := url.Parse(pair.Radicle.HTTPBaseURL); err == nil {
 			rHost = u.Host
 		}
-		add(series, rHost, gsync.RadicleExplorerLink(pair.Radicle), true, false)
+		add(series, rHost, gsync.RadicleExplorerLink(pair.Radicle), pair.Name, true, false)
 	}
 	return topology
 }

@@ -101,7 +101,7 @@ func pollSeriesReplies(series, handle, appPassword, pdsHost string, live *liveSt
 			continue
 		}
 
-		body := fmt.Sprintf("**via Bluesky, @%s:**\n\n%s", n.Author.Handle, strings.TrimSpace(n.Record.Text))
+		body := state.MarkMirrored(fmt.Sprintf("**via Bluesky, @%s:**\n\n%s", n.Author.Handle, strings.TrimSpace(n.Record.Text)))
 		if err := rs.CommentOnItem(e.Kind, e.ForgejoID, e.RadicleID, body); err != nil {
 			log.Error("bluesky reply: post comment", "series", series, "repo_pair", e.RepoPair, "err", err)
 			continue

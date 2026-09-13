@@ -216,8 +216,8 @@ var pageTmpl = template.Must(template.New("admin").Parse(`<!doctype html>
   }
   textarea { resize: vertical; min-height: 4.5rem; font-family: ui-monospace, monospace; font-size: .82rem; }
   .hint { font-size: .74rem; color: var(--text-muted); margin-top: .3rem; }
-  .row { display: flex; gap: 1rem; }
-  .row > div { flex: 1; }
+  .row { display: flex; flex-wrap: wrap; gap: 1rem; }
+  .row > div { flex: 1 1 12rem; min-width: 0; }
   .checks { display: flex; gap: 1.25rem; margin-top: .5rem; }
   .checks label { display: flex; align-items: center; gap: .4rem; font-weight: 500; margin: 0; }
   .checks input { width: auto; }

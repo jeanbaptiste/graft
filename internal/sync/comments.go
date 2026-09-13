@@ -18,24 +18,6 @@ const (
 	originATProto     = "atproto"
 )
 
-// mirrorPrefixes marks a comment's body as graft's own output — a copy
-// already mirrored from somewhere else — so a comment-sync pass never
-// treats it as new source content and mirrors it right back, which would
-// loop. This is the fast, always-on guard; commentSeen (the DB-backed
-// hash set) is the durable one, needed because a comment's *original*
-// copy carries no such prefix and must still be recognized as already
-// handled on every later pass.
-var mirrorPrefixes = []string{"**via Forgejo:**", "**via Radicle:**", "**via Fediverse,", "**via Bluesky,"}
-
-func isMirroredComment(body string) bool {
-	for _, p := range mirrorPrefixes {
-		if strings.HasPrefix(body, p) {
-			return true
-		}
-	}
-	return false
-}
-
 // maxCommentSummary bounds how much of a comment's body lands in the
 // dashboard's summary column — comments run much longer than a commit
 // subject line or an issue title.
@@ -61,7 +43,7 @@ func (s *IssueSyncer) syncIssueComments(forgejoIndex int64, ri radicle.Issue) er
 	}
 
 	for _, fc := range fcs {
-		if isMirroredComment(fc.Body) {
+		if state.IsMirroredComment(fc.Body) {
 			continue
 		}
 		hash := hashText(fc.Body)
@@ -72,7 +54,7 @@ func (s *IssueSyncer) syncIssueComments(forgejoIndex int64, ri radicle.Issue) er
 		if seen {
 			continue
 		}
-		if err := s.Radicle.CommentIssue(ri.ID, "**via Forgejo:**\n\n"+fc.Body); err != nil {
+		if err := s.Radicle.CommentIssue(ri.ID, state.MarkMirrored("**via Forgejo:**\n\n"+fc.Body)); err != nil {
 			return fmt.Errorf("mirror comment to radicle: %w", err)
 		}
 		if err := s.State.MarkCommentSeen(s.RepoPair, "issue", ri.ID, hash); err != nil {
@@ -88,7 +70,7 @@ func (s *IssueSyncer) syncIssueComments(forgejoIndex int64, ri radicle.Issue) er
 	}
 
 	for _, item := range ri.Comments() {
-		if isMirroredComment(item.Body) {
+		if state.IsMirroredComment(item.Body) {
 			continue
 		}
 		hash := hashText(item.Body)
@@ -99,7 +81,7 @@ func (s *IssueSyncer) syncIssueComments(forgejoIndex int64, ri radicle.Issue) er
 		if seen {
 			continue
 		}
-		if err := s.Forgejo.CreateIssueComment(forgejoIndex, "**via Radicle:**\n\n"+item.Body); err != nil {
+		if err := s.Forgejo.CreateIssueComment(forgejoIndex, state.MarkMirrored("**via Radicle:**\n\n"+item.Body)); err != nil {
 			return fmt.Errorf("mirror comment to forgejo: %w", err)
 		}
 		if err := s.State.MarkCommentSeen(s.RepoPair, "issue", ri.ID, hash); err != nil {
@@ -134,7 +116,7 @@ func (s *PatchSyncer) syncPatchComments(forgejoIndex int64, rp radicle.Patch) er
 		return fmt.Errorf("list forgejo comments: %w", err)
 	}
 	for _, fc := range fcs {
-		if isMirroredComment(fc.Body) {
+		if state.IsMirroredComment(fc.Body) {
 			continue
 		}
 		hash := hashText(fc.Body)
@@ -145,7 +127,7 @@ func (s *PatchSyncer) syncPatchComments(forgejoIndex int64, rp radicle.Patch) er
 		if seen {
 			continue
 		}
-		if err := s.Radicle.CommentPatch(revisionID, "**via Forgejo:**\n\n"+fc.Body); err != nil {
+		if err := s.Radicle.CommentPatch(revisionID, state.MarkMirrored("**via Forgejo:**\n\n"+fc.Body)); err != nil {
 			return fmt.Errorf("mirror comment to radicle: %w", err)
 		}
 		if err := s.State.MarkCommentSeen(s.RepoPair, "patch", rp.ID, hash); err != nil {
@@ -161,7 +143,7 @@ func (s *PatchSyncer) syncPatchComments(forgejoIndex int64, rp radicle.Patch) er
 	}
 
 	for _, item := range rp.Comments() {
-		if isMirroredComment(item.Body) {
+		if state.IsMirroredComment(item.Body) {
 			continue
 		}
 		hash := hashText(item.Body)
@@ -172,7 +154,7 @@ func (s *PatchSyncer) syncPatchComments(forgejoIndex int64, rp radicle.Patch) er
 		if seen {
 			continue
 		}
-		if err := s.Forgejo.CreateIssueComment(forgejoIndex, "**via Radicle:**\n\n"+item.Body); err != nil {
+		if err := s.Forgejo.CreateIssueComment(forgejoIndex, state.MarkMirrored("**via Radicle:**\n\n"+item.Body)); err != nil {
 			return fmt.Errorf("mirror comment to forgejo: %w", err)
 		}
 		if err := s.State.MarkCommentSeen(s.RepoPair, "patch", rp.ID, hash); err != nil {

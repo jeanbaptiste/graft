@@ -312,7 +312,7 @@ func (h *Handler) handleReply(series string, remoteActor *Actor, note inboxNote)
 	if who == "" {
 		who = remoteActor.Name
 	}
-	body := fmt.Sprintf("**via Fediverse, @%s:**\n\n%s", who, stripHTML(note.Content))
+	body := state.MarkMirrored(fmt.Sprintf("**via Fediverse, @%s:**\n\n%s", who, stripHTML(note.Content)))
 
 	if err := h.postComment(e.RepoPair, e.Kind, e.ForgejoID, e.RadicleID, body); err != nil {
 		h.log.Error("ap reply: post comment", "series", series, "repo_pair", e.RepoPair, "err", err)
