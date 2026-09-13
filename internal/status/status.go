@@ -307,28 +307,30 @@ type seriesRow struct {
 // with 3 mirrored sides (two Forgejos plus Radicle) gets 3 sub-rows, never
 // one link picked arbitrarily to represent all of them.
 type subRow struct {
-	Label string
-	URL   string
-	// EmptyState explains why this side shows no events even though it may
-	// already hold the mirrored content — empty when Events is non-empty,
-	// or when the whole series has genuinely never been touched. "source"
-	// marks the Forgejo side changes originate on (graft only logs the
-	// pushes it makes, never the pushes it reads from); "replicated" marks
-	// a side that received the content some other way graft doesn't log
-	// itself — Radicle's own peer-to-peer gossip between nodes, or a
-	// Forgejo-to-Forgejo Authorized Integration.
-	EmptyState string
-	Events     []event
+	Label  string
+	URL    string
+	Events []event
 }
 
-// event is one activity_log row: one heatmap cell, one tooltip, one link.
+// event is one heatmap cell, one tooltip, one link — either a real
+// activity_log row, or (when State is set) a synthetic cell standing in for
+// content this side plainly holds without graft ever having logged a push
+// to it directly: the Forgejo side changes originate on ("source"), or a
+// side that received the content some other way graft doesn't log itself —
+// Radicle's own peer-to-peer gossip, or a Forgejo-to-Forgejo Authorized
+// Integration ("replicated"). Synthetic cells reuse the real event they
+// stand in for (same kind, date, summary) so they read exactly like a
+// normal commit/issue/patch cell, just in a different color, with the
+// tooltip naming where it actually happened.
 type event struct {
-	Kind   string // "git", "issue", "patch" — drives the cell's color
-	Label  string // "Commit", "Issue", "Patch"
-	Text   string
-	URL    string
-	Server string // which mirrored side this happened on, e.g. "f1", "alice"
-	When   string // human-readable timestamp, for the tooltip
+	Kind        string // "git", "issue", "patch" — drives the cell's color when State is unset
+	Label       string // "Commit", "Issue", "Patch"
+	Text        string
+	URL         string
+	Server      string // which mirrored side this happened on, e.g. "f1", "alice"
+	When        string // human-readable timestamp, for the tooltip
+	State       string // "" for a real event; "source" or "replicated" for a synthetic one — drives the cell's color instead of Kind
+	OriginLabel string // for a synthetic cell, the sub-row label the real event was actually logged on
 }
 
 type commitLine struct {
@@ -457,38 +459,73 @@ func buildSeriesRows(entries []state.ActivityEntry, health map[string]bool, topo
 		subOrder := append([]string(nil), sa.subOrder...)
 		sort.Strings(subOrder)
 
+		// distinctEvents dedupes every event logged anywhere in the series
+		// down to one representative per real underlying commit/issue/patch
+		// — keyed by commit SHA for git (content-addressed, stable across
+		// every mirror), or by (kind, summary) otherwise — keeping
+		// whichever occurrence was logged earliest, since that's the
+		// closest graft gets to "when this actually entered the series".
 		// A series with at least one logged event anywhere means every
-		// currently-silent side already holds the mirrored content too —
-		// either as the origin, or received via a path graft doesn't log
-		// itself (Radicle gossip, an Authorized Integration). Only a
-		// series with zero events anywhere is genuinely untouched.
-		anyEvents := false
+		// currently-silent side already holds this content too — either
+		// as the origin, or received via a path graft doesn't log itself
+		// (Radicle gossip, an Authorized Integration) — so those sides
+		// get synthetic cells built from this map instead of the usual
+		// per-event ones. Only a series with zero events anywhere stays
+		// genuinely empty.
+		type rep struct {
+			entry state.ActivityEntry
+			label string
+		}
+		reps := map[string]rep{}
 		for _, label := range subOrder {
-			if len(sa.subs[label].events) > 0 {
-				anyEvents = true
-				break
+			for _, e := range sa.subs[label].events {
+				key := dedupKey(e.Kind, e.URL, e.Summary)
+				cur, ok := reps[key]
+				if !ok || e.OccurredAt.Before(cur.entry.OccurredAt) {
+					reps[key] = rep{entry: e, label: label}
+				}
 			}
 		}
+		repKeys := make([]string, 0, len(reps))
+		for k := range reps {
+			repKeys = append(repKeys, k)
+		}
+		sort.Slice(repKeys, func(i, j int) bool {
+			return reps[repKeys[i]].entry.OccurredAt.Before(reps[repKeys[j]].entry.OccurredAt)
+		})
 
 		subRows := make([]subRow, 0, len(subOrder))
 		for _, label := range subOrder {
 			sub := sa.subs[label]
+			if len(sub.events) == 0 && len(reps) > 0 {
+				cellState := "source"
+				if sub.ai || sub.radicle {
+					cellState = "replicated"
+				}
+				synth := make([]event, 0, len(repKeys))
+				for _, k := range repKeys {
+					r := reps[k]
+					synth = append(synth, event{
+						Kind:        r.entry.Kind,
+						Label:       kindLabel(r.entry.Kind),
+						Text:        r.entry.Summary,
+						URL:         reconstructLink(sub.url, r.entry.Kind, r.entry.URL),
+						Server:      label,
+						When:        r.entry.OccurredAt.Format("Mon, Jan 2, 15:04"),
+						State:       cellState,
+						OriginLabel: r.label,
+					})
+				}
+				subRows = append(subRows, subRow{Label: label, URL: sub.url, Events: synth})
+				continue
+			}
+
 			// entries arrive newest-first (see ActivitySince); the
 			// heatmap reads left-to-right as oldest-to-newest.
 			es := make([]state.ActivityEntry, len(sub.events))
 			copy(es, sub.events)
 			sort.Slice(es, func(i, j int) bool { return es[i].OccurredAt.Before(es[j].OccurredAt) })
-
-			emptyState := ""
-			if len(es) == 0 && anyEvents {
-				switch {
-				case sub.ai, sub.radicle:
-					emptyState = "replicated"
-				default:
-					emptyState = "source"
-				}
-			}
-			subRows = append(subRows, subRow{Label: label, URL: sub.url, EmptyState: emptyState, Events: toEvents(es)})
+			subRows = append(subRows, subRow{Label: label, URL: sub.url, Events: toEvents(es)})
 		}
 
 		ok, known := health[name]
@@ -581,6 +618,55 @@ func repoRootURL(rawURL string) string {
 		}
 	}
 	return ""
+}
+
+// commitSHA pulls the trailing commit hash out of a git-item URL, e.g.
+// ".../owner/repo/commit/<sha>" or ".../repo/commits/<sha>" -> "<sha>".
+// Empty if rawURL isn't a recognized commit link.
+func commitSHA(rawURL string) string {
+	for _, marker := range []string{"/commit/", "/commits/"} {
+		idx := strings.Index(rawURL, marker)
+		if idx < 0 {
+			continue
+		}
+		sha := rawURL[idx+len(marker):]
+		if i := strings.IndexAny(sha, "/?#"); i >= 0 {
+			sha = sha[:i]
+		}
+		return sha
+	}
+	return ""
+}
+
+// dedupKey identifies "the same underlying event" across every mirror it
+// got logged on. A commit is content-addressed — its SHA is identical on
+// every side it's mirrored to — so that's the stable key for git events.
+// Issues and patches get local, per-instance IDs that aren't portable
+// across hosts, so their summary text is the best available stand-in.
+func dedupKey(kind, url, summary string) string {
+	if sha := commitSHA(url); sha != "" {
+		return kind + ":" + sha
+	}
+	return kind + ":" + summary
+}
+
+// reconstructLink builds a same-host link for a synthetic cell: a commit's
+// SHA is identical everywhere it's mirrored, so subURL (this side's own
+// repo root) plus the right per-host item path reaches the same commit on
+// this side specifically, rather than sending the reader to the side it
+// was actually logged on. Falls back to the original event's own URL for
+// anything that isn't a reconstructible git link — an issue or patch ID
+// isn't portable across hosts, so linking to where it's actually visible
+// beats guessing.
+func reconstructLink(subURL, kind, originURL string) string {
+	sha := commitSHA(originURL)
+	if kind != "git" || sha == "" || subURL == "" {
+		return originURL
+	}
+	if strings.Contains(subURL, "/nodes/") {
+		return subURL + "/commits/" + sha
+	}
+	return subURL + "/commit/" + sha
 }
 
 var dashboardTmpl = template.Must(template.New("dashboard").Parse(`<!doctype html>
@@ -678,6 +764,8 @@ var dashboardTmpl = template.Must(template.New("dashboard").Parse(`<!doctype htm
   .cell[data-kind="git"] { background: var(--kind-git); }
   .cell[data-kind="issue"] { background: var(--kind-issue); }
   .cell[data-kind="patch"] { background: var(--kind-patch); }
+  .cell[data-kind="source"] { background: var(--kind-source); }
+  .cell[data-kind="replicated"] { background: var(--kind-replicated); }
 
   .tip {
     display: none; position: absolute; top: calc(100% + 8px); left: 50%; transform: translateX(-50%);
@@ -697,16 +785,10 @@ var dashboardTmpl = template.Must(template.New("dashboard").Parse(`<!doctype htm
   .tip a.tip-row:hover { background: rgba(255,255,255,.12); }
   .tip .tip-kind { color: #b3bac5; flex: none; }
   .tip .tip-empty { padding: 0 .75rem; color: #b3bac5; }
-
-  .state-pill {
-    display: inline-flex; align-items: center; gap: .35rem;
-    font-size: .74rem; padding: .2rem .6rem; border-radius: 999px;
+  .tip .tip-note {
+    padding: .35rem .75rem 0; margin-top: .3rem; border-top: 1px solid rgba(255,255,255,.15);
+    color: #b3bac5; font-size: .7rem; line-height: 1.4;
   }
-  .state-pill .state-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
-  .state-pill.state-source { background: rgba(255,153,31,.14); color: #974f0c; }
-  .state-pill.state-source .state-dot { background: var(--kind-source); }
-  .state-pill.state-replicated { background: rgba(0,184,217,.14); color: #0868a0; }
-  .state-pill.state-replicated .state-dot { background: var(--kind-replicated); }
 
   h2 { font-size: .78rem; text-transform: uppercase; letter-spacing: .04em; color: var(--text-muted); margin: 0 0 .9rem; font-weight: 600; }
   .commits { border-top: 1px solid var(--border); }
@@ -776,24 +858,23 @@ var dashboardTmpl = template.Must(template.New("dashboard").Parse(`<!doctype htm
             {{end}}
             <div class="days">
             {{range .Events}}
-              <div class="cell" data-kind="{{.Kind}}">
+              <div class="cell" data-kind="{{if .State}}{{.State}}{{else}}{{.Kind}}{{end}}">
                 <div class="tip">
                   <div class="tip-date">{{.When}}</div>
                   {{if .URL}}
-                  <a class="tip-row" href="{{.URL}}" target="_blank" rel="noopener"><span class="tip-kind">{{.Label}}</span>{{.Text}}</a>
+                  <a class="tip-row" href="{{.URL}}" target="_blank" rel="noopener"><span class="tip-kind">{{.Label}}{{if eq .State "source"}} · source{{else if eq .State "replicated"}} · replicated{{end}}</span>{{.Text}}</a>
                   {{else}}
-                  <span class="tip-row"><span class="tip-kind">{{.Label}}</span>{{.Text}}</span>
+                  <span class="tip-row"><span class="tip-kind">{{.Label}}{{if eq .State "source"}} · source{{else if eq .State "replicated"}} · replicated{{end}}</span>{{.Text}}</span>
+                  {{end}}
+                  {{if eq .State "source"}}
+                  <div class="tip-note">origin of this content — graft mirrored it out from here, via {{.OriginLabel}}</div>
+                  {{else if eq .State "replicated"}}
+                  <div class="tip-note">replicated here without a graft-logged push — originally pushed via {{.OriginLabel}}, {{.When}}</div>
                   {{end}}
                 </div>
               </div>
             {{else}}
-              {{if eq .EmptyState "source"}}
-              <span class="state-pill state-source" title="content originates here — graft only logs the pushes it makes, not the pushes it reads from"><span class="state-dot"></span>source</span>
-              {{else if eq .EmptyState "replicated"}}
-              <span class="state-pill state-replicated" title="content arrived here without a graft-logged push — Radicle peer-to-peer gossip, or a Forgejo Authorized Integration"><span class="state-dot"></span>replicated</span>
-              {{else}}
               <span class="tip-empty">nothing synced</span>
-              {{end}}
             {{end}}
             </div>
           </div>

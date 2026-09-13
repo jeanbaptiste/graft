@@ -252,14 +252,11 @@ func detectAuthorizedIntegrations(pairsBySeries map[string][]*sync.RepoSyncer, l
 // this wraps every route graft serves (dashboard, /social, ActivityPub,
 // /inbox) and a bug here would affect all of them at once.
 //
-// CSP is intentionally left out: the dashboard's entire stylesheet is one
-// inline <style> block, which a naive CSP would break outright (style-src
-// blocks inline styles by default) without a nonce wired through every
-// template render — worth doing properly later, not as a blanket header.
-// Cross-Origin-Embedder-Policy is left out too: it exists to protect
-// cross-origin-isolated contexts (SharedArrayBuffer, WASM threads) that
-// graft has no use for, and would only be a trap for a future contributor
-// who adds an external resource without thinking to CORS-enable it.
+// Cross-Origin-Embedder-Policy is deliberately left out: it exists to
+// protect cross-origin-isolated contexts (SharedArrayBuffer, WASM threads)
+// that graft has no use for, and would only be a trap for a future
+// contributor who adds an external resource without thinking to
+// CORS-enable it.
 func securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
@@ -271,6 +268,14 @@ func securityHeaders(next http.Handler) http.Handler {
 		// 180 days, no includeSubDomains (f1/f2/radicle aren't verified
 		// all-HTTPS as a unit) and no preload (effectively irreversible).
 		h.Set("Strict-Transport-Security", "max-age=15552000")
+		// Tested locally (Playwright, real dashboard/social HTML, with a
+		// negative control proving the test actually catches breakage)
+		// before shipping: default-src 'none' blocks all script execution
+		// (the real XSS mitigation graft gets from this) without touching
+		// rendering, since style-src 'unsafe-inline' covers the one inline
+		// <style> block each page has — nothing else is ever injected into
+		// it, so there's no practical downside to allowing it specifically.
+		h.Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
 		next.ServeHTTP(w, r)
 	})
 }
