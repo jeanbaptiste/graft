@@ -218,8 +218,8 @@ rad seed rad:z3gqcJUoA1n9HaHKufZs5FCSGazv5
 
 `graft` mirrors comments on issues and patches, both directions, from four origins:
 
-- **Forgejo → Radicle** and **Radicle → Forgejo**: native comments, polled and cross-mirrored each pass. Dedup is by content hash (`comment_seen` table) plus a `**via Forgejo:**` / `**via Radicle:**` prefix on the mirrored copy, so a mirrored comment is never mirrored back.
-- **ActivityPub**: a Mastodon reply to one of graft's posts becomes a comment, prefixed `**via Fediverse, @user:**`.
+- **Forgejo → Radicle** and **Radicle → Forgejo**: native comments, polled and cross-mirrored each pass. Dedup is by content hash (`comment_seen` table); the mirrored copy is visibly prefixed `**via Forgejo:**` / `**via Radicle:**` for readers, but the actual loop guard is an invisible marker (zero-width characters, `state.MarkMirrored`/`IsMirroredComment`) appended to the body — a real comment that happens to start with the same visible text is never mistaken for one of graft's own mirrors.
+- **ActivityPub**: a Mastodon reply to one of graft's posts becomes a comment, prefixed `**via Fediverse, @user:**` (same invisible marker).
 - **AT Proto**: a Bluesky reply, same mechanism, prefixed `**via Bluesky, @handle:**`. Not verified against a live account — built from AT Proto's published lexicon (`app.bsky.notification.listNotifications`), but no Bluesky account existed to test against when this was written.
 
 Dashboard cells are colored by kind only (commit, issue, patch, comment) — never by origin. Origin shows up as a tooltip note only, on hover.
