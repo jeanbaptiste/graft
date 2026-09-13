@@ -216,6 +216,16 @@ CREATE TABLE IF NOT EXISTS pending_radicle_peer (
 			return err
 		}
 	}
+	// Backfill: a dynamic_repo row that was already materialized before
+	// the approved column existed was live and trusted under the old
+	// model — the ALTER above defaults it to approved=0 along with every
+	// other row, which would silently pull an already-active peer back
+	// out of the sync loop on the next restart. Idempotent (materialized
+	// never reverts to 0), so safe to run unconditionally every startup,
+	// not just the first one after the column was added.
+	if _, err := db.Exec(`UPDATE dynamic_repo SET approved = 1 WHERE materialized = 1 AND approved = 0`); err != nil {
+		return err
+	}
 	return nil
 }
 

@@ -20,7 +20,7 @@ var validName = regexp.MustCompile(`^[a-zA-Z0-9._-]{1,80}$`)
 
 var addPeerTmpl = template.Must(template.New("add-peer").Parse(`
 <h1>Add a peer to an existing federation</h1>
-<p class="lead">Joins a Forgejo instance to a repo already mirrored elsewhere. Radicle side (RID, node, explorer) is inherited from the chosen series.</p>
+<p class="lead">Joins a Forgejo instance to a repo already mirrored elsewhere.</p>
 {{if .Error}}<div class="notice bad">{{.Error}}</div>{{end}}
 <div class="card">
   <form method="POST" action="/add-peer">
