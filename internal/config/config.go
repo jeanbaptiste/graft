@@ -21,6 +21,11 @@ type Config struct {
 	// graft.cyberwild.org), used to build ActivityPub actor/acct URIs.
 	// Required only if any series should be reachable over ActivityPub.
 	PublicHost string `yaml:"public_host"`
+	// AdminPassword gates the dashboard's self-service actions (adding a
+	// peer, starting a new repo) — anyone who knows it can use them.
+	// Defaults to "graft" if unset; Load logs a warning when that default
+	// is still in effect, since it's meant to be changed.
+	AdminPassword string `yaml:"admin_password"`
 }
 
 // RepoPair links one Forgejo repository to one Radicle repository and
@@ -100,6 +105,9 @@ func Load(path string) (*Config, error) {
 
 	if cfg.SyncInterval <= 0 {
 		cfg.SyncInterval = 5 * time.Minute
+	}
+	if cfg.AdminPassword == "" {
+		cfg.AdminPassword = "graft"
 	}
 	if cfg.StateDB == "" {
 		return nil, fmt.Errorf("state_db must be set")

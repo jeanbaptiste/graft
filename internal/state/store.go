@@ -110,6 +110,51 @@ CREATE TABLE IF NOT EXISTS ap_delivery_cursor (
 	series            TEXT PRIMARY KEY,
 	last_delivered_id INTEGER NOT NULL DEFAULT 0
 );
+
+-- One-time secret shares: an admin (graft's own, or a peer's) encrypts a
+-- secret (typically a Forgejo token) under a key derived from a 6-digit
+-- passcode plus the high-entropy id itself. Only id_hash (never the id in
+-- reversible form) is stored, so a database dump alone can never be used
+-- to derive the decryption key. Deleted the moment it's successfully
+-- claimed, or after too many wrong passcode attempts, or past expires_at —
+-- whichever comes first.
+CREATE TABLE IF NOT EXISTS token_share (
+	id_hash    TEXT PRIMARY KEY,
+	nonce      TEXT NOT NULL,
+	ciphertext TEXT NOT NULL,
+	attempts   INTEGER NOT NULL DEFAULT 0,
+	created_at TEXT NOT NULL,
+	expires_at TEXT NOT NULL
+);
+
+-- A repo pair added through the dashboard's self-service "add a peer" /
+-- "start a new repo" forms, gated by the shared admin password rather
+-- than a config.yaml edit + restart. forgejo_token_file (not the token
+-- itself) follows the same convention as every statically-configured
+-- pair: graft writes the submitted token out to its own chmod-600 file
+-- under the same directory config.yaml's token_file paths live in, and
+-- only the path is kept here. materialized flips to 1 once the running
+-- daemon has turned this row into a live RepoSyncer — it happens on the
+-- next sync pass, never mid-request, so a submission is never trusted
+-- before graft itself has validated it end to end.
+CREATE TABLE IF NOT EXISTS dynamic_repo (
+	id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+	name                  TEXT NOT NULL UNIQUE,
+	series                TEXT NOT NULL,
+	forgejo_base_url      TEXT NOT NULL,
+	forgejo_owner         TEXT NOT NULL,
+	forgejo_repo          TEXT NOT NULL,
+	forgejo_token_file    TEXT NOT NULL,
+	radicle_rid           TEXT NOT NULL,
+	radicle_http_base_url TEXT NOT NULL,
+	radicle_explorer_url  TEXT NOT NULL DEFAULT '',
+	radicle_rad_home      TEXT NOT NULL,
+	sync_git              INTEGER NOT NULL DEFAULT 1,
+	sync_issues           INTEGER NOT NULL DEFAULT 1,
+	sync_patches          INTEGER NOT NULL DEFAULT 1,
+	created_at            TEXT NOT NULL,
+	materialized          INTEGER NOT NULL DEFAULT 0
+);
 `)
 	if err != nil {
 		return err
@@ -447,4 +492,188 @@ ORDER BY id ASC
 		return nil, err
 	}
 	return scanActivityRows(rows)
+}
+
+// TokenShare is one encrypted one-time secret. Nonce and Ciphertext are
+// base64-encoded AES-256-GCM output; the decryption key is derived from
+// the passcode the claimant supplies plus the share's own id (which is
+// never stored — only IDHash is), so a database dump alone never yields
+// enough to decrypt.
+type TokenShare struct {
+	IDHash     string
+	Nonce      string
+	Ciphertext string
+	Attempts   int
+	ExpiresAt  time.Time
+}
+
+// CreateTokenShare stores a new encrypted share, indexed by the hash of
+// its id (the plaintext id is only ever known to whoever holds the URL).
+func (s *Store) CreateTokenShare(idHash, nonce, ciphertext string, expiresAt time.Time) error {
+	_, err := s.db.Exec(`
+INSERT INTO token_share (id_hash, nonce, ciphertext, attempts, created_at, expires_at)
+VALUES (?, ?, ?, 0, ?, ?)
+`, idHash, nonce, ciphertext, time.Now().UTC().Format(time.RFC3339), expiresAt.UTC().Format(time.RFC3339))
+	return err
+}
+
+// GetTokenShare looks up a share by id hash. Returns nil, nil if it
+// doesn't exist or has already expired (expiry is checked here rather
+// than left to a background sweep, so a stale row can never be claimed
+// even if cleanup hasn't run yet).
+func (s *Store) GetTokenShare(idHash string) (*TokenShare, error) {
+	row := s.db.QueryRow(`SELECT id_hash, nonce, ciphertext, attempts, expires_at FROM token_share WHERE id_hash = ?`, idHash)
+	var t TokenShare
+	var expiresAt string
+	if err := row.Scan(&t.IDHash, &t.Nonce, &t.Ciphertext, &t.Attempts, &expiresAt); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	exp, err := time.Parse(time.RFC3339, expiresAt)
+	if err != nil {
+		return nil, err
+	}
+	t.ExpiresAt = exp
+	if time.Now().UTC().After(exp) {
+		_ = s.DeleteTokenShare(idHash)
+		return nil, nil
+	}
+	return &t, nil
+}
+
+// IncrementTokenShareAttempts records one failed passcode attempt and
+// returns the new total, so the caller can destroy the share once too
+// many wrong guesses have been made — the actual brute-force defense,
+// since a 6-digit passcode alone is far too small a space to rely on
+// key-derivation cost against a determined online attacker.
+func (s *Store) IncrementTokenShareAttempts(idHash string) (int, error) {
+	_, err := s.db.Exec(`UPDATE token_share SET attempts = attempts + 1 WHERE id_hash = ?`, idHash)
+	if err != nil {
+		return 0, err
+	}
+	row := s.db.QueryRow(`SELECT attempts FROM token_share WHERE id_hash = ?`, idHash)
+	var n int
+	if err := row.Scan(&n); err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
+// DeleteTokenShare destroys a share — called on a successful claim (it's
+// one-time by design), on exceeding the attempt limit (fail closed), or
+// on expiry.
+func (s *Store) DeleteTokenShare(idHash string) error {
+	_, err := s.db.Exec(`DELETE FROM token_share WHERE id_hash = ?`, idHash)
+	return err
+}
+
+// DynamicRepo is one repo pair added through the dashboard's self-service
+// onboarding forms rather than a config.yaml edit.
+type DynamicRepo struct {
+	ID                 int64
+	Name               string
+	Series             string
+	ForgejoBaseURL     string
+	ForgejoOwner       string
+	ForgejoRepo        string
+	ForgejoTokenFile   string
+	RadicleRID         string
+	RadicleHTTPBaseURL string
+	RadicleExplorerURL string
+	RadicleRadHome     string
+	SyncGit            bool
+	SyncIssues         bool
+	SyncPatches        bool
+	Materialized       bool
+}
+
+// CreateDynamicRepo inserts a newly-submitted repo pair, active as soon
+// as the next sync pass picks it up. Fails if the name is already taken —
+// the same uniqueness graft would need across config.yaml pairs anyway.
+func (s *Store) CreateDynamicRepo(r DynamicRepo) (int64, error) {
+	res, err := s.db.Exec(`
+INSERT INTO dynamic_repo (
+	name, series, forgejo_base_url, forgejo_owner, forgejo_repo, forgejo_token_file,
+	radicle_rid, radicle_http_base_url, radicle_explorer_url, radicle_rad_home,
+	sync_git, sync_issues, sync_patches, created_at, materialized
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+`, r.Name, r.Series, r.ForgejoBaseURL, r.ForgejoOwner, r.ForgejoRepo, r.ForgejoTokenFile,
+		r.RadicleRID, r.RadicleHTTPBaseURL, r.RadicleExplorerURL, r.RadicleRadHome,
+		boolToInt(r.SyncGit), boolToInt(r.SyncIssues), boolToInt(r.SyncPatches), time.Now().UTC().Format(time.RFC3339))
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
+// UnmaterializedDynamicRepos returns every dynamic_repo row the running
+// daemon hasn't yet turned into a live RepoSyncer.
+func (s *Store) UnmaterializedDynamicRepos() ([]DynamicRepo, error) {
+	rows, err := s.db.Query(`
+SELECT id, name, series, forgejo_base_url, forgejo_owner, forgejo_repo, forgejo_token_file,
+	radicle_rid, radicle_http_base_url, radicle_explorer_url, radicle_rad_home,
+	sync_git, sync_issues, sync_patches
+FROM dynamic_repo WHERE materialized = 0
+`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []DynamicRepo
+	for rows.Next() {
+		var r DynamicRepo
+		var g, i, p int
+		if err := rows.Scan(&r.ID, &r.Name, &r.Series, &r.ForgejoBaseURL, &r.ForgejoOwner, &r.ForgejoRepo, &r.ForgejoTokenFile,
+			&r.RadicleRID, &r.RadicleHTTPBaseURL, &r.RadicleExplorerURL, &r.RadicleRadHome, &g, &i, &p); err != nil {
+			return nil, err
+		}
+		r.SyncGit, r.SyncIssues, r.SyncPatches = g != 0, i != 0, p != 0
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// MarkDynamicRepoMaterialized flips a row so it's never re-registered on
+// a later pass.
+func (s *Store) MarkDynamicRepoMaterialized(id int64) error {
+	_, err := s.db.Exec(`UPDATE dynamic_repo SET materialized = 1 WHERE id = ?`, id)
+	return err
+}
+
+// AllDynamicRepos returns every dynamic_repo row regardless of
+// materialization state — used at startup to rebuild the full set of
+// live pairs after a restart, since these rows persist across it but
+// config.yaml doesn't know about them.
+func (s *Store) AllDynamicRepos() ([]DynamicRepo, error) {
+	rows, err := s.db.Query(`
+SELECT id, name, series, forgejo_base_url, forgejo_owner, forgejo_repo, forgejo_token_file,
+	radicle_rid, radicle_http_base_url, radicle_explorer_url, radicle_rad_home,
+	sync_git, sync_issues, sync_patches
+FROM dynamic_repo
+`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []DynamicRepo
+	for rows.Next() {
+		var r DynamicRepo
+		var g, i, p int
+		if err := rows.Scan(&r.ID, &r.Name, &r.Series, &r.ForgejoBaseURL, &r.ForgejoOwner, &r.ForgejoRepo, &r.ForgejoTokenFile,
+			&r.RadicleRID, &r.RadicleHTTPBaseURL, &r.RadicleExplorerURL, &r.RadicleRadHome, &g, &i, &p); err != nil {
+			return nil, err
+		}
+		r.SyncGit, r.SyncIssues, r.SyncPatches = g != 0, i != 0, p != 0
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }

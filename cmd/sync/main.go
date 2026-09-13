@@ -10,14 +10,17 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"graft/internal/activitypub"
+	"graft/internal/admin"
 	"graft/internal/config"
 	"graft/internal/state"
 	"graft/internal/status"
-	"graft/internal/sync"
+	gsync "graft/internal/sync"
 )
 
 func main() {
@@ -33,6 +36,9 @@ func main() {
 		log.Error("load config", "err", err)
 		os.Exit(1)
 	}
+	if cfg.AdminPassword == "graft" {
+		log.Warn("admin_password is left at its default value — anyone who knows it can add a peer or start a repo; set admin_password in config.yaml to change it")
+	}
 
 	st, err := state.Open(cfg.StateDB)
 	if err != nil {
@@ -45,81 +51,66 @@ func main() {
 	if idx := lastSlash(stateDir); idx >= 0 {
 		stateDir = stateDir[:idx]
 	}
+	tokenDir := stateDir
+	if len(cfg.Repos) > 0 {
+		if idx := lastSlash(cfg.Repos[0].Forgejo.TokenFile); idx >= 0 {
+			tokenDir = cfg.Repos[0].Forgejo.TokenFile[:idx]
+		}
+	}
+	defaultRadHome := ""
+	if len(cfg.Repos) > 0 {
+		defaultRadHome = cfg.Repos[0].Radicle.RadHome
+	}
 
-	syncers := make([]*sync.RepoSyncer, 0, len(cfg.Repos))
-	syncersByPair := map[string]*sync.RepoSyncer{}
-	syncersBySeries := map[string]*sync.RepoSyncer{}
-	pairsBySeries := map[string][]*sync.RepoSyncer{}
+	// live holds every piece of runtime state a dynamically-added peer or
+	// repo needs to join without a restart — mutated only from the
+	// runAll/ticker goroutine, but read concurrently by HTTP handler
+	// goroutines (ActivityPub callbacks, the admin package's Series
+	// lookup), so every access goes through mu.
+	live := &liveState{
+		pairs:           append([]config.RepoPair(nil), cfg.Repos...),
+		syncersByPair:   map[string]*gsync.RepoSyncer{},
+		syncersBySeries: map[string]*gsync.RepoSyncer{},
+		pairsBySeries:   map[string][]*gsync.RepoSyncer{},
+	}
 	for _, pair := range cfg.Repos {
-		rs, err := sync.New(pair, st, sync.WorkDirFor(stateDir, pair.Name))
+		rs, err := gsync.New(pair, st, gsync.WorkDirFor(stateDir, pair.Name))
 		if err != nil {
 			log.Error("set up repo pair", "pair", pair.Name, "err", err)
 			os.Exit(1)
 		}
-		syncers = append(syncers, rs)
-		syncersByPair[pair.Name] = rs
-		if _, ok := syncersBySeries[rs.Series()]; !ok {
-			syncersBySeries[rs.Series()] = rs
-		}
-		pairsBySeries[rs.Series()] = append(pairsBySeries[rs.Series()], rs)
+		live.addSyncer(rs)
 	}
-	detectAuthorizedIntegrations(pairsBySeries, log)
-
-	// aiTargetHosts marks which series+Forgejo-host combinations receive
-	// pushes directly via Authorized Integrations rather than via graft
-	// itself — read by buildTopology so the dashboard can tell that side's
-	// silence apart from a side nothing has ever reached.
-	aiTargetHosts := map[string]map[string]bool{}
-	for series, pairs := range pairsBySeries {
-		for _, rs := range pairs {
-			if rs.HasAuthorizedIntegrationSource() {
-				if aiTargetHosts[series] == nil {
-					aiTargetHosts[series] = map[string]bool{}
-				}
-				aiTargetHosts[series][rs.ForgejoHost()] = true
-			}
-		}
-	}
-
-	topology := buildTopology(cfg, aiTargetHosts)
-	blueskyConfigured := map[string]bool{}
-	for _, pair := range cfg.Repos {
-		if pair.Bluesky != nil {
-			series := pair.Series
-			if series == "" {
-				series = pair.Name
-			}
-			blueskyConfigured[series] = true
-		}
-	}
+	detectAuthorizedIntegrations(live.pairsBySeriesSnapshot(), log)
+	live.rebuildTopology(cfg)
 
 	tracker := status.NewTracker(st, cfg.SourceURL)
-	tracker.SetTopology(topology)
+	tracker.SetTopology(live.topologySnapshot())
 	tracker.SetPublicHost(cfg.PublicHost)
-	tracker.SetBlueskyConfigured(blueskyConfigured)
+	tracker.SetBlueskyConfigured(blueskyConfigured(cfg.Repos))
 
 	var apHandler *activitypub.Handler
 	if cfg.PublicHost != "" {
 		apHandler = activitypub.NewHandler(st, cfg.PublicHost, log,
 			func(series string) string {
-				if refs := topology[series]; len(refs) > 0 {
+				if refs := live.topologySnapshot()[series]; len(refs) > 0 {
 					return refs[0].URL
 				}
 				return ""
 			},
 			func(series string) bool {
-				_, ok := topology[series]
+				_, ok := live.topologySnapshot()[series]
 				return ok
 			},
 			func(repoPair, kind string, forgejoID int64, radicleID, body string) error {
-				rs, ok := syncersByPair[repoPair]
+				rs, ok := live.syncerForPair(repoPair)
 				if !ok {
 					return fmt.Errorf("unknown repo pair %q", repoPair)
 				}
 				return rs.CommentOnItem(kind, forgejoID, radicleID, body)
 			},
 			func(series string) string {
-				rs, ok := syncersBySeries[series]
+				rs, ok := live.syncerForSeries(series)
 				if !ok {
 					return ""
 				}
@@ -133,8 +124,23 @@ func main() {
 		)
 	}
 
+	adminHandler := admin.NewHandler(admin.Config{
+		Store:          st,
+		AdminPassword:  cfg.AdminPassword,
+		PublicHost:     cfg.PublicHost,
+		TokenDir:       tokenDir,
+		DefaultRadHome: defaultRadHome,
+		Series:         live.seriesInfos,
+	})
+
 	runAll := func() {
-		for _, rs := range syncers {
+		if materializeDynamicRepos(st, live, stateDir, log) {
+			detectAuthorizedIntegrations(live.pairsBySeriesSnapshot(), log)
+			live.rebuildTopology(cfg)
+			tracker.SetTopology(live.topologySnapshot())
+			tracker.SetBlueskyConfigured(blueskyConfigured(live.pairsSnapshot()))
+		}
+		for _, rs := range live.syncersSnapshot() {
 			gitErr, issuesErr, patchErr := rs.Run(log)
 			tracker.Record(rs.Name(), rs.Series(), gitErr, issuesErr, patchErr)
 		}
@@ -148,6 +154,7 @@ func main() {
 		if apHandler != nil {
 			apHandler.Register(mux)
 		}
+		adminHandler.Register(mux)
 		mux.Handle("/", tracker.Handler())
 
 		go func() {
@@ -169,11 +176,201 @@ func main() {
 	}
 }
 
+// liveState is every piece of runtime registration that can grow after
+// startup (a peer or repo added through the dashboard), guarded by one
+// mutex since it's written from the ticker goroutine and read from HTTP
+// handler goroutines.
+type liveState struct {
+	mu              sync.Mutex
+	pairs           []config.RepoPair
+	syncers         []*gsync.RepoSyncer
+	syncersByPair   map[string]*gsync.RepoSyncer
+	syncersBySeries map[string]*gsync.RepoSyncer
+	pairsBySeries   map[string][]*gsync.RepoSyncer
+	topology        map[string][]status.ServerRef
+}
+
+func (l *liveState) addSyncer(rs *gsync.RepoSyncer) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.syncers = append(l.syncers, rs)
+	l.syncersByPair[rs.Name()] = rs
+	if _, ok := l.syncersBySeries[rs.Series()]; !ok {
+		l.syncersBySeries[rs.Series()] = rs
+	}
+	l.pairsBySeries[rs.Series()] = append(l.pairsBySeries[rs.Series()], rs)
+}
+
+func (l *liveState) addPair(p config.RepoPair) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.pairs = append(l.pairs, p)
+}
+
+func (l *liveState) syncersSnapshot() []*gsync.RepoSyncer {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]*gsync.RepoSyncer(nil), l.syncers...)
+}
+
+func (l *liveState) pairsSnapshot() []config.RepoPair {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]config.RepoPair(nil), l.pairs...)
+}
+
+func (l *liveState) pairsBySeriesSnapshot() map[string][]*gsync.RepoSyncer {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	out := make(map[string][]*gsync.RepoSyncer, len(l.pairsBySeries))
+	for k, v := range l.pairsBySeries {
+		out[k] = append([]*gsync.RepoSyncer(nil), v...)
+	}
+	return out
+}
+
+func (l *liveState) syncerForPair(name string) (*gsync.RepoSyncer, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	rs, ok := l.syncersByPair[name]
+	return rs, ok
+}
+
+func (l *liveState) syncerForSeries(series string) (*gsync.RepoSyncer, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	rs, ok := l.syncersBySeries[series]
+	return rs, ok
+}
+
+func (l *liveState) topologySnapshot() map[string][]status.ServerRef {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.topology
+}
+
+// rebuildTopology recomputes the dashboard's topology map from the
+// current set of pairs (static config plus anything added dynamically)
+// and the AI-detection state each RepoSyncer already carries.
+func (l *liveState) rebuildTopology(cfg *config.Config) {
+	l.mu.Lock()
+	pairs := append([]config.RepoPair(nil), l.pairs...)
+	pairsBySeries := make(map[string][]*gsync.RepoSyncer, len(l.pairsBySeries))
+	for k, v := range l.pairsBySeries {
+		pairsBySeries[k] = v
+	}
+	l.mu.Unlock()
+
+	aiTargetHosts := map[string]map[string]bool{}
+	for series, rss := range pairsBySeries {
+		for _, rs := range rss {
+			if rs.HasAuthorizedIntegrationSource() {
+				if aiTargetHosts[series] == nil {
+					aiTargetHosts[series] = map[string]bool{}
+				}
+				aiTargetHosts[series][rs.ForgejoHost()] = true
+			}
+		}
+	}
+	topo := buildTopology(pairs, aiTargetHosts)
+
+	l.mu.Lock()
+	l.topology = topo
+	l.mu.Unlock()
+}
+
+// seriesInfos is the admin package's view of every federation a new peer
+// can join — one entry per series, carrying whichever pair's Radicle side
+// every sibling in that series already shares.
+func (l *liveState) seriesInfos() []admin.SeriesInfo {
+	pairs := l.pairsSnapshot()
+	seen := map[string]admin.SeriesInfo{}
+	var order []string
+	for _, p := range pairs {
+		series := p.Series
+		if series == "" {
+			series = p.Name
+		}
+		if _, ok := seen[series]; !ok {
+			seen[series] = admin.SeriesInfo{
+				Name:               series,
+				RadicleRID:         p.Radicle.RID,
+				RadicleHTTPBaseURL: p.Radicle.HTTPBaseURL,
+				RadicleExplorerURL: p.Radicle.ExplorerURL,
+			}
+			order = append(order, series)
+		}
+	}
+	sort.Strings(order)
+	out := make([]admin.SeriesInfo, 0, len(order))
+	for _, s := range order {
+		out = append(out, seen[s])
+	}
+	return out
+}
+
+// materializeDynamicRepos turns every dynamic_repo row nobody has
+// activated yet into a live RepoSyncer, joining the sync loop on this
+// very pass — no restart, matching the "shows up next pass" model the
+// rest of graft already uses. Returns whether anything changed, so the
+// caller only pays for a topology rebuild when it's actually needed.
+func materializeDynamicRepos(st *state.Store, live *liveState, stateDir string, log *slog.Logger) bool {
+	rows, err := st.UnmaterializedDynamicRepos()
+	if err != nil {
+		log.Error("list dynamic repos", "err", err)
+		return false
+	}
+	changed := false
+	for _, d := range rows {
+		pair := config.RepoPair{
+			Name:   d.Name,
+			Series: d.Series,
+			Forgejo: config.ForgejoTarget{
+				BaseURL: d.ForgejoBaseURL, Owner: d.ForgejoOwner, Repo: d.ForgejoRepo, TokenFile: d.ForgejoTokenFile,
+			},
+			Radicle: config.RadicleTarget{
+				RID: d.RadicleRID, HTTPBaseURL: d.RadicleHTTPBaseURL, RadHome: d.RadicleRadHome, ExplorerURL: d.RadicleExplorerURL,
+			},
+			Sync: config.SyncScope{Git: d.SyncGit, Issues: d.SyncIssues, Patches: d.SyncPatches},
+		}
+		rs, err := gsync.New(pair, st, gsync.WorkDirFor(stateDir, pair.Name))
+		if err != nil {
+			// Left unmaterialized — retried next pass rather than
+			// dropped, in case the failure is transient (e.g. the
+			// Forgejo repo wasn't reachable yet).
+			log.Error("materialize dynamic repo", "name", d.Name, "err", err)
+			continue
+		}
+		live.addSyncer(rs)
+		live.addPair(pair)
+		if err := st.MarkDynamicRepoMaterialized(d.ID); err != nil {
+			log.Error("mark dynamic repo materialized", "name", d.Name, "err", err)
+		}
+		log.Info("materialized dynamic repo", "name", d.Name, "series", d.Series)
+		changed = true
+	}
+	return changed
+}
+
+func blueskyConfigured(repos []config.RepoPair) map[string]bool {
+	out := map[string]bool{}
+	for _, pair := range repos {
+		if pair.Bluesky != nil {
+			series := pair.Series
+			if series == "" {
+				series = pair.Name
+			}
+			out[series] = true
+		}
+	}
+	return out
+}
+
 // buildTopology declares every mirror target configured for each series
 // (its Forgejo side and its Radicle side), so the dashboard can show a
 // side that's never produced an event yet — not just sides the activity
 // log happens to mention.
-func buildTopology(cfg *config.Config, aiTargetHosts map[string]map[string]bool) map[string][]status.ServerRef {
+func buildTopology(pairs []config.RepoPair, aiTargetHosts map[string]map[string]bool) map[string][]status.ServerRef {
 	topology := map[string][]status.ServerRef{}
 	seen := map[string]bool{}
 	add := func(series, host, repoURL string, radicle, ai bool) {
@@ -193,7 +390,7 @@ func buildTopology(cfg *config.Config, aiTargetHosts map[string]map[string]bool)
 		})
 	}
 
-	for _, pair := range cfg.Repos {
+	for _, pair := range pairs {
 		series := pair.Series
 		if series == "" {
 			series = pair.Name
@@ -210,7 +407,7 @@ func buildTopology(cfg *config.Config, aiTargetHosts map[string]map[string]bool)
 		if u, err := url.Parse(pair.Radicle.HTTPBaseURL); err == nil {
 			rHost = u.Host
 		}
-		add(series, rHost, sync.RadicleExplorerLink(pair.Radicle), true, false)
+		add(series, rHost, gsync.RadicleExplorerLink(pair.Radicle), true, false)
 	}
 	return topology
 }
@@ -220,9 +417,10 @@ func buildTopology(cfg *config.Config, aiTargetHosts map[string]map[string]bool)
 // workflow pushing directly into the other via Authorized Integrations
 // (see internal/sync's authint.go) — and if so, tells the receiving
 // pair's GitSyncer to stop relaying that content via Radicle itself,
-// since the direct path is faster. Run once at startup: workflow files
-// don't change often enough to justify re-checking every pass.
-func detectAuthorizedIntegrations(pairsBySeries map[string][]*sync.RepoSyncer, log *slog.Logger) {
+// since the direct path is faster. Run at startup and again whenever a
+// new peer joins dynamically — workflow files don't change often enough
+// to justify checking on every ordinary sync pass.
+func detectAuthorizedIntegrations(pairsBySeries map[string][]*gsync.RepoSyncer, log *slog.Logger) {
 	for series, pairs := range pairsBySeries {
 		if len(pairs) < 2 {
 			continue
@@ -236,7 +434,7 @@ func detectAuthorizedIntegrations(pairsBySeries map[string][]*sync.RepoSyncer, l
 				if destHost == "" {
 					continue
 				}
-				if sync.HasAuthorizedIntegration(source.ForgejoClient(), destHost) {
+				if gsync.HasAuthorizedIntegration(source.ForgejoClient(), destHost) {
 					log.Info("authorized integration detected",
 						"series", series, "source", source.ForgejoHost(), "target", destHost)
 					dest.SetAuthorizedIntegrationSource(source.ForgejoHost())
@@ -250,7 +448,8 @@ func detectAuthorizedIntegrations(pairsBySeries map[string][]*sync.RepoSyncer, l
 // headers on every request. Deliberately just static assignments — no
 // per-request logic, nothing that can panic or branch incorrectly — since
 // this wraps every route graft serves (dashboard, /social, ActivityPub,
-// /inbox) and a bug here would affect all of them at once.
+// /inbox, the admin onboarding forms) and a bug here would affect all of
+// them at once.
 //
 // Cross-Origin-Embedder-Policy is deliberately left out: it exists to
 // protect cross-origin-isolated contexts (SharedArrayBuffer, WASM threads)
@@ -275,7 +474,10 @@ func securityHeaders(next http.Handler) http.Handler {
 		// rendering, since style-src 'unsafe-inline' covers the one inline
 		// <style> block each page has — nothing else is ever injected into
 		// it, so there's no practical downside to allowing it specifically.
-		h.Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
+		// form-action 'self': the admin onboarding/share pages are plain
+		// HTML forms posting back to graft itself — 'none' would silently
+		// block every one of them.
+		h.Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
 		next.ServeHTTP(w, r)
 	})
 }

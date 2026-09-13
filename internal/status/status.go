@@ -722,7 +722,13 @@ var dashboardTmpl = template.Must(template.New("dashboard").Parse(`<!doctype htm
 
   .heatmap-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: .9rem; }
   .heatmap-head h2 { margin: 0; }
-  .legend { display: flex; gap: .9rem; margin-bottom: .9rem; }
+  .legend { display: flex; gap: .9rem; margin-bottom: .9rem; flex-wrap: wrap; }
+  .fed-actions { display: flex; gap: .5rem; margin-bottom: .9rem; }
+  .btn-outline {
+    font-size: .76rem; font-weight: 600; color: var(--brand); border: 1px solid var(--brand);
+    border-radius: 4px; padding: .3rem .65rem; text-decoration: none; white-space: nowrap;
+  }
+  .btn-outline:hover { background: var(--brand); color: #fff; }
   .legend span { display: flex; align-items: center; gap: .35rem; font-size: .74rem; color: var(--text-muted); }
   .legend .sw { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
   .legend .sw[data-kind="git"] { background: var(--kind-git); }
@@ -839,6 +845,10 @@ var dashboardTmpl = template.Must(template.New("dashboard").Parse(`<!doctype htm
         <span><i class="sw" data-kind="source"></i>Source</span>
         <span><i class="sw" data-kind="replicated"></i>Replicated</span>
       </div>
+      <div class="fed-actions">
+        <a class="btn-outline" href="/add-peer">+ Add peer</a>
+        <a class="btn-outline" href="/new-repo">+ New repo</a>
+      </div>
     </div>
     <div class="heatmap">
     {{range .Series}}
@@ -916,6 +926,7 @@ var dashboardTmpl = template.Must(template.New("dashboard").Parse(`<!doctype htm
 </main>
 <footer>
   {{if .SourceURL}}<a href="{{.SourceURL}}" target="_blank" rel="noopener">{{.SourceURL}}</a>{{end}}
+  <a href="/share/new">Share a secret, once &rarr;</a>
   <span>GPLv3</span>
 </footer>
 </body>
