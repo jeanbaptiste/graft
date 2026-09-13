@@ -81,6 +81,13 @@ func main() {
 		}
 		live.addSyncer(rs)
 	}
+	// dynamic_repo rows from a previous run persist in the database, but
+	// live.syncers starts empty every process start regardless of each
+	// row's "materialized" flag — that flag only means "graft has synced
+	// this at least once ever", not "this process already has a live
+	// RepoSyncer for it". Load all of them now, not just ones still
+	// pending their first sync.
+	loadAllDynamicRepos(st, live, stateDir, log)
 	detectAuthorizedIntegrations(live.pairsBySeriesSnapshot(), log)
 	live.rebuildTopology(cfg)
 
@@ -310,6 +317,49 @@ func (l *liveState) seriesInfos() []admin.SeriesInfo {
 	return out
 }
 
+func dynamicRepoToPair(d state.DynamicRepo) config.RepoPair {
+	return config.RepoPair{
+		Name:   d.Name,
+		Series: d.Series,
+		Forgejo: config.ForgejoTarget{
+			BaseURL: d.ForgejoBaseURL, Owner: d.ForgejoOwner, Repo: d.ForgejoRepo, TokenFile: d.ForgejoTokenFile,
+		},
+		Radicle: config.RadicleTarget{
+			RID: d.RadicleRID, HTTPBaseURL: d.RadicleHTTPBaseURL, RadHome: d.RadicleRadHome, ExplorerURL: d.RadicleExplorerURL,
+		},
+		Sync: config.SyncScope{Git: d.SyncGit, Issues: d.SyncIssues, Patches: d.SyncPatches},
+	}
+}
+
+// loadAllDynamicRepos rebuilds live RepoSyncers for every dynamic_repo row
+// ever created, materialized or not — called once at startup, since
+// live.syncers is always empty at process start no matter what the
+// database's "materialized" flag says. Deliberately non-fatal (unlike a
+// bad static config.yaml pair, which does exit): the whole point of the
+// self-service onboarding path is resilience to transient failures (the
+// peer's Forgejo temporarily unreachable, say) — refusing to start graft
+// entirely over one dynamic peer would be a worse outcome than the bug
+// this function fixes. A row that fails here just stays out of the sync
+// loop until the next successful restart.
+func loadAllDynamicRepos(st *state.Store, live *liveState, stateDir string, log *slog.Logger) {
+	rows, err := st.AllDynamicRepos()
+	if err != nil {
+		log.Error("list dynamic repos", "err", err)
+		return
+	}
+	for _, d := range rows {
+		pair := dynamicRepoToPair(d)
+		rs, err := gsync.New(pair, st, gsync.WorkDirFor(stateDir, pair.Name))
+		if err != nil {
+			log.Error("load dynamic repo", "name", d.Name, "err", err)
+			continue
+		}
+		live.addSyncer(rs)
+		live.addPair(pair)
+		log.Info("loaded dynamic repo", "name", d.Name, "series", d.Series)
+	}
+}
+
 // materializeDynamicRepos turns every dynamic_repo row nobody has
 // activated yet into a live RepoSyncer, joining the sync loop on this
 // very pass — no restart, matching the "shows up next pass" model the
@@ -323,17 +373,7 @@ func materializeDynamicRepos(st *state.Store, live *liveState, stateDir string, 
 	}
 	changed := false
 	for _, d := range rows {
-		pair := config.RepoPair{
-			Name:   d.Name,
-			Series: d.Series,
-			Forgejo: config.ForgejoTarget{
-				BaseURL: d.ForgejoBaseURL, Owner: d.ForgejoOwner, Repo: d.ForgejoRepo, TokenFile: d.ForgejoTokenFile,
-			},
-			Radicle: config.RadicleTarget{
-				RID: d.RadicleRID, HTTPBaseURL: d.RadicleHTTPBaseURL, RadHome: d.RadicleRadHome, ExplorerURL: d.RadicleExplorerURL,
-			},
-			Sync: config.SyncScope{Git: d.SyncGit, Issues: d.SyncIssues, Patches: d.SyncPatches},
-		}
+		pair := dynamicRepoToPair(d)
 		rs, err := gsync.New(pair, st, gsync.WorkDirFor(stateDir, pair.Name))
 		if err != nil {
 			// Left unmaterialized — retried next pass rather than

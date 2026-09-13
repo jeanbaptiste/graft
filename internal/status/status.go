@@ -871,7 +871,8 @@ var dashboardTmpl = template.Must(template.New("dashboard").Parse(`<!doctype htm
         <span><i class="sw" data-kind="comment"></i>Comment</span>
       </div>
       <div class="fed-actions">
-        <a class="btn-outline" href="/add-peer">+ Add peer</a>
+        <a class="btn-outline" href="/add-peer">+ Add Forgejo peer</a>
+        <a class="btn-outline" href="/add-radicle-peer">+ Add Radicle peer</a>
         <a class="btn-outline" href="/new-repo">+ New repo</a>
       </div>
     </div>

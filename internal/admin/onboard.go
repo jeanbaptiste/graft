@@ -45,7 +45,6 @@ var addPeerTmpl = template.Must(template.New("add-peer").Parse(`
     </div>
     <label for="repo">Repository</label>
     <input type="text" id="repo" name="repo" required value="{{.Repo}}">
-    <div class="hint">Create this repo empty on the peer — no auto-init. An auto-init commit diverges from the federation's history and blocks the sync.</div>
 
     <label for="token">Forgejo token</label>
     <textarea id="token" name="token" required placeholder="scoped to write:repository + write:issue"></textarea>
@@ -60,11 +59,11 @@ var addPeerTmpl = template.Must(template.New("add-peer").Parse(`
 
     <label for="password">Admin password</label>
     <input type="password" id="password" name="password" required autocomplete="off">
-    <div class="hint">Active within one sync interval. No restart.</div>
 
     <button type="submit">Add peer</button>
   </form>
 </div>
+<p><a class="nav-link" href="/add-radicle-peer">Add a Radicle peer instead &rarr;</a></p>
 `))
 
 var newRepoTmpl = template.Must(template.New("new-repo").Parse(`
@@ -128,7 +127,7 @@ var newRepoTmpl = template.Must(template.New("new-repo").Parse(`
 
 var onboardOKTmpl = template.Must(template.New("onboard-ok").Parse(`
 <h1>{{.Title}}</h1>
-<div class="notice good">{{.Name}} saved. Active within one sync interval. No restart.</div>
+<div class="notice good">{{.Name}} saved.</div>
 <p><a class="nav-link" href="/">&larr; Back to the dashboard</a></p>
 `))
 

@@ -84,6 +84,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/share/new", h.shareNew)
 	mux.HandleFunc("/share/", h.shareClaim) // also serves /share/<id>/qr.png
 	mux.HandleFunc("/add-peer", h.addPeer)
+	mux.HandleFunc("/add-radicle-peer", h.addRadiclePeer)
 	mux.HandleFunc("/new-repo", h.newRepo)
 }
 
