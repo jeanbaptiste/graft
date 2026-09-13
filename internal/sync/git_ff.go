@@ -37,17 +37,21 @@ type GitSyncerFF struct {
 	aiSkipStreak                int
 }
 
+// run captures stdout and stderr separately — a git warning (e.g. "warning:
+// redirecting to ..." on a renamed repo, printed to stderr) must never land
+// in the stdout callers like headOf parse for a commit SHA. See git.go's
+// run, which has the same split for the same reason.
 func (g *GitSyncerFF) run(args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), execTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = g.WorkDir
-	var out bytes.Buffer
+	var out, errOut bytes.Buffer
 	cmd.Stdout = &out
-	cmd.Stderr = &out
+	cmd.Stderr = &errOut
 	err := cmd.Run()
 	if err != nil {
-		return out.String(), fmt.Errorf("git %v: %w: %s", args, err, out.String())
+		return out.String(), fmt.Errorf("git %v: %w: %s", args, err, errOut.String())
 	}
 	return out.String(), nil
 }

@@ -65,18 +65,24 @@ type GitSyncer struct {
 // make graft silently stop mirroring that direction forever.
 const maxAISkipStreak = 10
 
+// run captures stdout and stderr separately — a git warning (e.g. "warning:
+// redirecting to ..." on a renamed repo) is printed to stderr and must
+// never end up in the stdout headOf parses for a commit SHA. Discovered via
+// a real graft-presentation pair whose Forgejo peer got renamed: git's
+// redirect warning landed first in the merged buffer and headOf's Sscanf
+// picked "warning:" up as the SHA instead of skipping to the real line.
 func (g *GitSyncer) run(args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), execTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = g.WorkDir
 	cmd.Env = append(os.Environ(), "RAD_HOME="+g.RadHome)
-	var out bytes.Buffer
+	var out, errOut bytes.Buffer
 	cmd.Stdout = &out
-	cmd.Stderr = &out
+	cmd.Stderr = &errOut
 	err := cmd.Run()
 	if err != nil {
-		return out.String(), fmt.Errorf("git %v: %w: %s", args, err, out.String())
+		return out.String(), fmt.Errorf("git %v: %w: %s", args, err, errOut.String())
 	}
 	return out.String(), nil
 }

@@ -672,11 +672,24 @@ func kindLabel(kind string) string {
 	}
 }
 
-// recentActivity lists every mirrored event — commits, issues, and
-// patches/pull requests alike, newest first. graft doesn't mirror stars or
-// other social metadata: its sync scope is git content, issues, and
-// patches/PRs only (see config.SyncScope), so that's what shows up here.
+// recentActivityLimit caps how many rows the dashboard's recent-activity
+// list renders. Without it, a busy sync window (the 3-day ActivitySince
+// lookback in dashboardData) can hand recentActivity thousands of entries —
+// once observed at 16,621 rows, a 10.6MB page taking 3.1s to load — even
+// though the list is only ever meant to show a short "what just happened"
+// glance, not a full history. Capping the render, not the query: entries
+// are already newest-first, so this keeps the most recent ones.
+const recentActivityLimit = 10
+
+// recentActivity lists the most recent mirrored events — commits, issues,
+// and patches/pull requests alike, newest first, capped at
+// recentActivityLimit. graft doesn't mirror stars or other social
+// metadata: its sync scope is git content, issues, and patches/PRs only
+// (see config.SyncScope), so that's what shows up here.
 func recentActivity(entries []state.ActivityEntry) []commitLine {
+	if len(entries) > recentActivityLimit {
+		entries = entries[:recentActivityLimit]
+	}
 	out := make([]commitLine, 0, len(entries))
 	for _, e := range entries {
 		name := e.Series
@@ -1012,7 +1025,7 @@ var dashboardTmpl = template.Must(template.New("dashboard").Parse(`<!doctype htm
   <div class="card">
     <div class="heatmap-head">
       <h2>Recent activity</h2>
-      <span class="sub">last 3 days</span>
+      <span class="sub">last 10 events</span>
     </div>
     <div class="commits">
     {{range .Activity}}
