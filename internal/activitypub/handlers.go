@@ -87,7 +87,7 @@ type Handler struct {
 	// at all.
 	repoURL    func(series string) string
 	known      func(series string) bool
-	postSocial func(repoPair, platform, author, body, itemKind, itemTitle, itemURL string, forgejoID int64, radicleID string) error
+	postSocial func(repoPair, platform, author, body, itemKind, itemTitle, itemURL, sourceURL string, forgejoID int64, radicleID string) error
 	radicleDID func(series string) string
 	client     *http.Client
 }
@@ -98,7 +98,7 @@ func NewHandler(
 	log *slog.Logger,
 	repoURL func(series string) string,
 	known func(series string) bool,
-	postSocial func(repoPair, platform, author, body, itemKind, itemTitle, itemURL string, forgejoID int64, radicleID string) error,
+	postSocial func(repoPair, platform, author, body, itemKind, itemTitle, itemURL, sourceURL string, forgejoID int64, radicleID string) error,
 	radicleDID func(series string) string,
 ) *Handler {
 	return &Handler{
@@ -425,11 +425,18 @@ func detectPlatform(content, fallbackAuthor string) (platform, author, body stri
 }
 
 // inboxNote is the subset of an inbound reply's Note object this handler
-// reads.
+// reads. url is the standard ActivityStreams property for a canonical
+// human-facing link to the object — distinct from id, which is this
+// Note's own dereferenceable-but-not-necessarily-browsable AP URI. A
+// bridge that knows its own content's public URL (a Discourse post
+// permalink, say) can set it for the wiki trackback link; optional, and
+// every reader downstream treats an empty one as "not available" rather
+// than an error.
 type inboxNote struct {
 	Type      string `json:"type"`
 	InReplyTo string `json:"inReplyTo"`
 	Content   string `json:"content"`
+	URL       string `json:"url"`
 }
 
 // handleReply bridges a fediverse reply to one of our Notes back onto the
@@ -478,7 +485,7 @@ func (h *Handler) handleReply(series string, remoteActor *Actor, note inboxNote)
 	if itemTitle == "" {
 		itemTitle = e.RepoPair
 	}
-	if err := h.postSocial(e.RepoPair, platform, author, body, e.Kind, itemTitle, e.URL, e.ForgejoID, e.RadicleID); err != nil {
+	if err := h.postSocial(e.RepoPair, platform, author, body, e.Kind, itemTitle, e.URL, note.URL, e.ForgejoID, e.RadicleID); err != nil {
 		h.log.Error("ap reply: log social reply", "series", series, "platform", platform, "repo_pair", e.RepoPair, "err", err)
 		return
 	}

@@ -299,7 +299,7 @@ func (rs *RepoSyncer) CommentOnItem(kind string, forgejoID int64, radicleID, bod
 // between graft restarts). That split is never silent — see the WARN log
 // below — but it is not reconciled retroactively; entries already written
 // stay where they were written.
-func (rs *RepoSyncer) LogSocialReply(platform, author, body, itemKind, itemTitle, itemURL string, forgejoID int64, radicleID string, occurredAt time.Time) error {
+func (rs *RepoSyncer) LogSocialReply(platform, author, body, itemKind, itemTitle, itemURL, sourceURL string, forgejoID int64, radicleID string, occurredAt time.Time) error {
 	slog.Info("LogSocialReply: entered", "pair", rs.pair.Name, "platform", platform, "fanoutCount", len(rs.fanout))
 	page := "Social-" + platform
 	header := fmt.Sprintf(
@@ -312,8 +312,18 @@ func (rs *RepoSyncer) LogSocialReply(platform, author, body, itemKind, itemTitle
 	if itemURL != "" {
 		link = fmt.Sprintf("[%s](%s)", itemTitle, itemURL)
 	}
-	entry := fmt.Sprintf("### %s\n\n%s &middot; %s\n\n**%s** wrote:\n\n%s\n",
-		occurredAt.UTC().Format("2006-01-02 15:04 UTC"), link, itemKind, author, quoted)
+	// A trackback to the reply's own post/comment on the originating
+	// platform, not just the mirrored issue/patch — lets a reader jump
+	// straight to the real conversation instead of only seeing the
+	// quoted excerpt here. Not every ingestion path can supply this yet
+	// (a bridge has to know its own content's public URL), so it's
+	// omitted rather than shown broken when empty.
+	trackback := ""
+	if sourceURL != "" {
+		trackback = fmt.Sprintf(" &middot; [source](%s)", sourceURL)
+	}
+	entry := fmt.Sprintf("### %s\n\n%s &middot; %s%s\n\n**%s** wrote:\n\n%s\n",
+		occurredAt.UTC().Format("2006-01-02 15:04 UTC"), link, itemKind, trackback, author, quoted)
 
 	slog.Info("LogSocialReply: before fanout", "pair", rs.pair.Name)
 	rs.fanoutSocialReply(itemKind, radicleID, platform, author, body)

@@ -117,14 +117,14 @@ func main() {
 				_, ok := live.topologySnapshot()[series]
 				return ok
 			},
-			func(repoPair, platform, author, body, itemKind, itemTitle, itemURL string, forgejoID int64, radicleID string) error {
+			func(repoPair, platform, author, body, itemKind, itemTitle, itemURL, sourceURL string, forgejoID int64, radicleID string) error {
 				log.Info("postSocial: entered", "repo_pair", repoPair, "platform", platform)
 				rs, ok := live.syncerForPair(repoPair)
 				log.Info("postSocial: syncerForPair returned", "repo_pair", repoPair, "found", ok)
 				if !ok {
 					return fmt.Errorf("unknown repo pair %q", repoPair)
 				}
-				err := rs.LogSocialReply(platform, author, body, itemKind, itemTitle, itemURL, forgejoID, radicleID, time.Now())
+				err := rs.LogSocialReply(platform, author, body, itemKind, itemTitle, itemURL, sourceURL, forgejoID, radicleID, time.Now())
 				log.Info("postSocial: LogSocialReply returned", "repo_pair", repoPair, "err", err)
 				return err
 			},

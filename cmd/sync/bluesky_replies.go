@@ -137,7 +137,8 @@ func pollSeriesReplies(series, handle, appPassword, pdsHost string, live *liveSt
 		if itemTitle == "" {
 			itemTitle = e.RepoPair
 		}
-		if err := rs.LogSocialReply("Bluesky", "@"+n.Author.Handle, strings.TrimSpace(n.Record.Text), e.Kind, itemTitle, e.URL, e.ForgejoID, e.RadicleID, time.Now()); err != nil {
+		sourceURL := blueskyPermalink(n.Author.Handle, n.URI)
+		if err := rs.LogSocialReply("Bluesky", "@"+n.Author.Handle, strings.TrimSpace(n.Record.Text), e.Kind, itemTitle, e.URL, sourceURL, e.ForgejoID, e.RadicleID, time.Now()); err != nil {
 			log.Error("bluesky reply: log social reply", "series", series, "repo_pair", e.RepoPair, "err", err)
 			continue
 		}
@@ -149,6 +150,24 @@ func pollSeriesReplies(series, handle, appPassword, pdsHost string, live *liveSt
 		}
 	}
 	return nil
+}
+
+// blueskyPermalink builds the human-browsable bsky.app URL for a reply
+// post from its own AT-URI (at://did/app.bsky.feed.post/rkey) and its
+// author's handle — the trackback link shown next to the reply on
+// graft's wiki page. Falls back to empty (no trackback shown, not a
+// broken link) if the URI isn't the expected shape rather than guessing.
+func blueskyPermalink(handle, atURI string) string {
+	const want = "app.bsky.feed.post/"
+	i := strings.LastIndex(atURI, want)
+	if i < 0 || handle == "" {
+		return ""
+	}
+	rkey := atURI[i+len(want):]
+	if rkey == "" {
+		return ""
+	}
+	return fmt.Sprintf("https://bsky.app/profile/%s/post/%s", handle, rkey)
 }
 
 func truncateATProtoSummary(s string) string {
