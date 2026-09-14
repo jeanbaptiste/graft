@@ -9,7 +9,7 @@ It runs on a timer, keeps state in a local SQLite file, and never force-pushes. 
 - **Git content**: the default branch, fast-forward only.
 - **Issues**: Forgejo issues become Radicle issues and vice versa. Create-only for now — edits made after the first mirror aren't propagated yet.
 - **Patches / pull requests**: a Forgejo PR opens a Radicle patch (and back), by pushing the PR's head commit to `refs/patches` on the Radicle side, or as a branch + PR on the Forgejo side.
-- **Comments**: on issues and patches, both directions, from four origins — native Forgejo ↔ Radicle, a Mastodon reply (ActivityPub), and a Bluesky reply (AT Proto). Dedup'd by content hash, prefixed with where it actually came from. See [TUTORIAL.md § Comments](TUTORIAL.md#comments).
+- **Comments**: on issues and patches, both directions, from four origins — native Forgejo ↔ Radicle, a Mastodon reply (ActivityPub), and a Bluesky reply (AT Proto). Dedup'd by content hash, prefixed with where it actually came from. See [Comments](TUTORIAL.md#comments).
 
 ## Why
 
