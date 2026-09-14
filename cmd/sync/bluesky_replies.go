@@ -4,11 +4,39 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
+	"time"
 
 	"graft/internal/atproto"
 	"graft/internal/config"
 	"graft/internal/state"
 )
+
+// blueskyPollInterval throttles how often pollSeriesReplies actually logs
+// in per series, independent of the main sync loop's own interval.
+// pollBlueskyReplies is called on every runAll() tick — with
+// sync_interval set as low as 1m (as it is in production), calling
+// pollSeriesReplies unthrottled logs in fresh, on every single tick, for
+// every series with Bluesky configured. That hammered this PDS's own
+// createSession endpoint hard enough to trip its rate limiter (HTTP 429)
+// within about ten minutes of going live — discovered directly from
+// graft's own logs, not simulated.
+const blueskyPollInterval = 5 * time.Minute
+
+var (
+	blueskyLastPollMu sync.Mutex
+	blueskyLastPoll   = map[string]time.Time{}
+)
+
+func blueskyShouldPoll(series string) bool {
+	blueskyLastPollMu.Lock()
+	defer blueskyLastPollMu.Unlock()
+	if t, ok := blueskyLastPoll[series]; ok && time.Since(t) < blueskyPollInterval {
+		return false
+	}
+	blueskyLastPoll[series] = time.Now()
+	return true
+}
 
 // pollBlueskyReplies checks every series with a Bluesky account configured
 // for new replies to posts graft itself made, and bridges each one back
@@ -36,6 +64,10 @@ func pollBlueskyReplies(pairs []config.RepoPair, live *liveState, st *state.Stor
 			continue
 		}
 		seenSeries[series] = true
+
+		if !blueskyShouldPoll(series) {
+			continue
+		}
 
 		appPassword, err := config.ReadToken(pair.Bluesky.AppPasswordFile)
 		if err != nil {
