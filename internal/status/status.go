@@ -66,11 +66,11 @@ type Tracker struct {
 	store     *state.Store
 	sourceURL string
 
-	mu                sync.Mutex
-	pairs             map[string]PairResult
-	topology          map[string][]ServerRef
-	publicHost        string
-	blueskyConfigured map[string]bool
+	mu             sync.Mutex
+	pairs          map[string]PairResult
+	topology       map[string][]ServerRef
+	publicHost     string
+	blueskyHandles map[string]string // series -> AT Proto handle, "" if unconfigured
 }
 
 func NewTracker(store *state.Store, sourceURL string) *Tracker {
@@ -96,12 +96,12 @@ func (t *Tracker) SetPublicHost(host string) {
 	t.publicHost = host
 }
 
-// SetBlueskyConfigured declares which series have a Bluesky account
-// configured, for the /social page's status badge.
-func (t *Tracker) SetBlueskyConfigured(configured map[string]bool) {
+// SetBlueskyConfigured declares each series' AT Proto handle ("" if none
+// configured), for the /social page's status badge and profile link.
+func (t *Tracker) SetBlueskyConfigured(handles map[string]string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.blueskyConfigured = configured
+	t.blueskyHandles = handles
 }
 
 // Record stores the outcome of a pass for one pair. Pass nil for a scope
@@ -227,13 +227,15 @@ type socialRow struct {
 	OutboxURL         string
 	FollowerCount     int
 	BlueskyConfigured bool
+	BlueskyHandle     string // AT Proto handle, e.g. "series.pds.example.org"
+	BlueskyProfileURL string // https://bsky.app/profile/<handle>, for people to follow it
 }
 
 func (t *Tracker) serveSocial(w http.ResponseWriter, r *http.Request) {
 	t.mu.Lock()
 	topology := t.topology
 	publicHost := t.publicHost
-	blueskyConfigured := t.blueskyConfigured
+	blueskyHandles := t.blueskyHandles
 	t.mu.Unlock()
 
 	if publicHost == "" {
@@ -254,15 +256,21 @@ func (t *Tracker) serveSocial(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			followerCount = 0
 		}
-		rows = append(rows, socialRow{
+		blueskyHandle := blueskyHandles[name]
+		row := socialRow{
 			Name:              name,
 			Handle:            name + "@" + publicHost,
 			WebfingerURL:      "https://" + publicHost + "/.well-known/webfinger?resource=acct:" + name + "@" + publicHost,
 			ActorURL:          actorURL,
 			OutboxURL:         actorURL + "/outbox",
 			FollowerCount:     followerCount,
-			BlueskyConfigured: blueskyConfigured[name],
-		})
+			BlueskyConfigured: blueskyHandle != "",
+			BlueskyHandle:     blueskyHandle,
+		}
+		if blueskyHandle != "" {
+			row.BlueskyProfileURL = "https://bsky.app/profile/" + blueskyHandle
+		}
+		rows = append(rows, row)
 	}
 
 	data := socialData{PublicHost: publicHost, Series: rows, SourceURL: t.sourceURL}
@@ -1131,7 +1139,12 @@ var socialTmpl = template.Must(template.New("social").Parse(`<!doctype html>
         <a href="{{.OutboxURL}}" target="_blank" rel="noopener">Outbox</a>
       </div>
       <h2>AT Proto / Bluesky</h2>
-      <span class="badge">{{if .BlueskyConfigured}}posts on new activity{{else}}not configured{{end}}</span>
+      {{if .BlueskyConfigured}}
+      <div class="handle"><a href="{{.BlueskyProfileURL}}" target="_blank" rel="noopener">@{{.BlueskyHandle}}</a></div>
+      <span class="badge">posts on new activity</span>
+      {{else}}
+      <span class="badge">not configured</span>
+      {{end}}
     </div>
   {{else}}
     <span class="empty">no series configured</span>

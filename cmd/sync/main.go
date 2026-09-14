@@ -397,15 +397,17 @@ func materializeDynamicRepos(st *state.Store, live *liveState, stateDir string, 
 	return changed
 }
 
-func blueskyConfigured(repos []config.RepoPair) map[string]bool {
-	out := map[string]bool{}
+// blueskyConfigured maps each series to its AT Proto handle, for the
+// /social page's status badge and profile link ("" = not configured).
+func blueskyConfigured(repos []config.RepoPair) map[string]string {
+	out := map[string]string{}
 	for _, pair := range repos {
 		if pair.Bluesky != nil {
 			series := pair.Series
 			if series == "" {
 				series = pair.Name
 			}
-			out[series] = true
+			out[series] = pair.Bluesky.Handle
 		}
 	}
 	return out
