@@ -105,8 +105,12 @@ func TestBuildSeriesRowsSkipsFillOnError(t *testing.T) {
 	if f2.Error == "" {
 		t.Fatal("expected f2's subRow.Error to be set")
 	}
-	if len(f2.Events) != 0 {
-		t.Fatalf("expected no synthetic fill on an errored side, got %d events", len(f2.Events))
+	// No synthetic fill from other sides' content — but an errored side
+	// does get exactly one event of its own: the in-heatmap error
+	// pastille (see buildSeriesRows), which is this side's own signal,
+	// not a borrowed one.
+	if len(f2.Events) != 1 || f2.Events[0].Kind != "error" {
+		t.Fatalf("expected exactly one error-pastille event on an errored side, got %d events: %+v", len(f2.Events), f2.Events)
 	}
 	f1 := sub["f1.example"]
 	if f1.Error != "" {

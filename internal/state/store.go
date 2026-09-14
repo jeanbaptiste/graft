@@ -20,10 +20,18 @@ type Store struct {
 
 // Open creates (if needed) and opens the state database at path.
 func Open(path string) (*Store, error) {
-	db, err := sql.Open("sqlite", path)
+	// WAL + a busy_timeout so a reader never blocks a writer and a writer
+	// waits instead of erroring immediately; MaxOpenConns(1) on top of
+	// that fully serializes writes rather than relying on busy_timeout
+	// alone, since SQLite only ever has one real writer at a time anyway.
+	// Fixes recurring "database is locked (SQLITE_BUSY)" errors seen live
+	// on federation-x-f3/graft-source-f2's git sync and the dashboard's
+	// own outbox reads racing the sync loop's writes on the same file.
+	db, err := sql.Open("sqlite", path+"?_pragma=busy_timeout(10000)&_pragma=journal_mode(WAL)")
 	if err != nil {
 		return nil, fmt.Errorf("open state db: %w", err)
 	}
+	db.SetMaxOpenConns(1)
 	if err := migrate(db); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("migrate state db: %w", err)
