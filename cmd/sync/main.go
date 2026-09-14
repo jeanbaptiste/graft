@@ -76,6 +76,11 @@ func main() {
 		syncersBySeries: map[string]*gsync.RepoSyncer{},
 		pairsBySeries:   map[string][]*gsync.RepoSyncer{},
 	}
+	if err := checkPairCollisions(cfg.Repos, st); err != nil {
+		log.Error("pair collision check", "err", err)
+		os.Exit(1)
+	}
+
 	for _, pair := range cfg.Repos {
 		rs, err := gsync.New(pair, st, gsync.WorkDirFor(stateDir, pair.Name))
 		if err != nil {
@@ -319,6 +324,63 @@ func (l *liveState) seriesInfos() []admin.SeriesInfo {
 		out = append(out, seen[s])
 	}
 	return out
+}
+
+// checkPairCollisions refuses to start if any single Forgejo repository
+// (identified by base_url+owner/repo, case-sensitive — Forgejo repo paths
+// are) is claimed as a sync target by more than one pair, whether that
+// pair lives in config.yaml or was added later through the dashboard's
+// self-service onboarding (dynamic_repo, invisible in this file). Two
+// independent pairs mirroring into the same repo don't know about each
+// other's mirrored content and will treat it as newly authored, each
+// re-mirroring what the other just created — an amplifying duplication
+// loop, not a one-off. Confirmed live: adding a second, static
+// Forgejo<->Forgejo pair for a series that already had a working
+// dynamic Forgejo<->Radicle pair into the very same repo produced 36
+// duplicate issues across two repos in under two minutes before the
+// daemon was stopped by hand. See docs/PAIRING.md for the two ways a
+// pair can exist and why this check can't just live in config.go's
+// validate() (it has no DB access, and dynamic_repo rows aren't known
+// until runtime).
+func checkPairCollisions(staticPairs []config.RepoPair, st *state.Store) error {
+	claimedBy := map[string]string{} // target key -> pair name that claims it
+
+	claim := func(target config.ForgejoTarget, pairName string) error {
+		if target.BaseURL == "" {
+			return nil
+		}
+		key := strings.TrimRight(target.BaseURL, "/") + "/" + target.Owner + "/" + target.Repo
+		if existing, ok := claimedBy[key]; ok && existing != pairName {
+			return fmt.Errorf(
+				"%s is a sync target for both %q and %q — two independent pairs mirroring into the same repo will duplicate each other's content (see docs/PAIRING.md); one must be config.yaml-static and the other must be found via the dashboard's dynamic peer list and removed, or the reverse",
+				key, existing, pairName)
+		}
+		claimedBy[key] = pairName
+		return nil
+	}
+
+	for _, p := range staticPairs {
+		if err := claim(p.Forgejo, p.Name); err != nil {
+			return err
+		}
+		if p.ForgejoMirror != nil {
+			if err := claim(*p.ForgejoMirror, p.Name); err != nil {
+				return err
+			}
+		}
+	}
+
+	dynamics, err := st.AllDynamicRepos()
+	if err != nil {
+		return fmt.Errorf("list dynamic repos for collision check: %w", err)
+	}
+	for _, d := range dynamics {
+		target := config.ForgejoTarget{BaseURL: d.ForgejoBaseURL, Owner: d.ForgejoOwner, Repo: d.ForgejoRepo}
+		if err := claim(target, d.Name); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func dynamicRepoToPair(d state.DynamicRepo) config.RepoPair {
