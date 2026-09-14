@@ -239,38 +239,6 @@ func (rs *RepoSyncer) Series() string {
 	return rs.pair.Name
 }
 
-// CommentOnItem posts a reply (from the ActivityPub comment bridge, see
-// internal/activitypub) onto the underlying Forgejo issue/PR and Radicle
-// issue/patch this pair mirrors. For a patch, radicleID is used as the
-// revision to comment on — correct for the common single-revision case,
-// since a patch's own id equals its first revision's id; a patch that has
-// since been updated with further revisions may have the comment attach
-// to an older revision instead of the latest one, a known scoped
-// limitation rather than a bug to chase down for v2.
-func (rs *RepoSyncer) CommentOnItem(kind string, forgejoID int64, radicleID, body string) error {
-	var errs []error
-	if forgejoID != 0 {
-		if err := rs.forgejo.CreateIssueComment(forgejoID, body); err != nil {
-			errs = append(errs, fmt.Errorf("forgejo: %w", err))
-		}
-	}
-	if radicleID != "" {
-		var err error
-		switch kind {
-		case "issue":
-			err = rs.radicle.CommentIssue(radicleID, body)
-		case "patch":
-			err = rs.radicle.CommentPatch(radicleID, body)
-		default:
-			err = fmt.Errorf("cannot comment on kind %q", kind)
-		}
-		if err != nil {
-			errs = append(errs, fmt.Errorf("radicle: %w", err))
-		}
-	}
-	return errors.Join(errs...)
-}
-
 // LogSocialReply appends one social-platform reply to this pair's own
 // Forgejo wiki, on a page dedicated to platform ("Social-Discourse",
 // "Social-Bluesky", "Social-Mastodon", "Social-Zulip", "Social-Tangled" —
@@ -340,7 +308,36 @@ func (rs *RepoSyncer) LogSocialReply(platform, author, body, itemKind, itemTitle
 	}
 	rs.noteWikiMode(false)
 	tagged := fmt.Sprintf("via %s, %s:\n\n%s", platform, author, body)
-	return rs.CommentOnItem(itemKind, forgejoID, radicleID, tagged)
+	return rs.postToFallbackIssue(platform, tagged)
+}
+
+// postToFallbackIssue is LogSocialReply's wiki.ErrForbidden fallback: a
+// dedicated issue per (pair, platform) — created once, reused for every
+// later reply on that pair+platform — rather than a comment on whichever
+// original item the reply happened to be about. One issue per platform
+// per pair keeps this from flooding the tracker: every reply on a pair
+// whose wiki access is permanently unavailable (a read-mostly token on a
+// third-party Forgejo, say) lands as a comment on the same issue, not a
+// fresh one each time.
+func (rs *RepoSyncer) postToFallbackIssue(platform, tagged string) error {
+	forgejoID, _, ok, err := rs.state.SocialFallbackIssue(rs.pair.Name, platform)
+	if err != nil {
+		return fmt.Errorf("look up fallback issue: %w", err)
+	}
+	if !ok {
+		issue, err := rs.forgejo.CreateIssue(
+			"Social — "+platform,
+			fmt.Sprintf("Replies about this repository from **%s**, collected here because the wiki isn't writable with this pair's current token scope.\n\nMaintained automatically by [graft](https://github.com/jeanbaptiste/graft) — edits here are not preserved.", platform),
+		)
+		if err != nil {
+			return fmt.Errorf("create fallback issue: %w", err)
+		}
+		if err := rs.state.SaveSocialFallbackIssue(rs.pair.Name, platform, issue.Index, ""); err != nil {
+			return fmt.Errorf("save fallback issue: %w", err)
+		}
+		forgejoID = issue.Index
+	}
+	return rs.forgejo.CreateIssueComment(forgejoID, tagged)
 }
 
 // fanoutTarget is one extra Forgejo instance LogSocialReply also posts to

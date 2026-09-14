@@ -204,6 +204,20 @@ CREATE TABLE IF NOT EXISTS pending_radicle_peer (
 	address    TEXT NOT NULL,
 	created_at TEXT NOT NULL
 );
+
+-- A Forgejo/Radicle issue created as a fallback home for one platform's
+-- social replies, when the wiki write those normally land on isn't
+-- available (see RepoSyncer.LogSocialReply's wiki.ErrForbidden path) —
+-- one per (repo_pair, platform), reused for every subsequent reply on
+-- that pair+platform instead of creating a new issue each time.
+CREATE TABLE IF NOT EXISTS social_fallback_issue (
+	repo_pair  TEXT NOT NULL,
+	platform   TEXT NOT NULL,
+	forgejo_id INTEGER NOT NULL DEFAULT 0,
+	radicle_id TEXT NOT NULL DEFAULT '',
+	created_at TEXT NOT NULL,
+	PRIMARY KEY (repo_pair, platform)
+);
 `)
 	if err != nil {
 		return err
@@ -819,6 +833,27 @@ func (s *Store) ATProtoPostActivity(uri string) (int64, bool, error) {
 		return 0, false, nil
 	}
 	return id, err == nil, err
+}
+
+// SocialFallbackIssue returns the dedicated issue previously created for
+// this pair+platform's social replies when the wiki wasn't writable, if
+// one exists yet.
+func (s *Store) SocialFallbackIssue(repoPair, platform string) (forgejoID int64, radicleID string, ok bool, err error) {
+	row := s.db.QueryRow(`SELECT forgejo_id, radicle_id FROM social_fallback_issue WHERE repo_pair = ? AND platform = ?`, repoPair, platform)
+	err = row.Scan(&forgejoID, &radicleID)
+	if err == sql.ErrNoRows {
+		return 0, "", false, nil
+	}
+	return forgejoID, radicleID, err == nil, err
+}
+
+// SaveSocialFallbackIssue records the issue just created as this
+// pair+platform's dedicated fallback home, so later replies reuse it
+// instead of creating a new one each time.
+func (s *Store) SaveSocialFallbackIssue(repoPair, platform string, forgejoID int64, radicleID string) error {
+	_, err := s.db.Exec(`INSERT OR REPLACE INTO social_fallback_issue (repo_pair, platform, forgejo_id, radicle_id, created_at) VALUES (?, ?, ?, ?, ?)`,
+		repoPair, platform, forgejoID, radicleID, time.Now().UTC().Format(time.RFC3339))
+	return err
 }
 
 // ATProtoCursor returns how far notification polling has gotten for a
