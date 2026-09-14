@@ -51,6 +51,27 @@ type RepoPair struct {
 	// pair mirrors a new commit or opens a patch/PR. Optional: nil means
 	// this pair never posts to Bluesky.
 	Bluesky *BlueskyTarget `yaml:"bluesky"`
+	// SocialFanout lists additional Forgejo instances that should also
+	// receive social replies (Discourse/Zulip/Bluesky/Mastodon/Tangled)
+	// as issue comments, beyond this pair's own Forgejo. Built for a
+	// third-party Forgejo instance that mirrors the same underlying repo
+	// over Radicle gossip but isn't itself a graft-managed pair (no
+	// item_mapping of its own tying it to this series) — see
+	// docs/PAIRING.md. Each target's MapPairName names an existing pair
+	// (this one, or another) whose item_mapping already links a Radicle
+	// issue/patch id to a Forgejo issue number on that instance; without
+	// that mapping already existing, there's no way to know which issue
+	// number on the fanout target corresponds to the reply's underlying
+	// item, so a reply with no resolvable mapping is silently skipped
+	// for that target rather than erroring the whole pass.
+	SocialFanout []SocialFanoutTarget `yaml:"social_fanout"`
+}
+
+// SocialFanoutTarget is one extra Forgejo instance social replies should
+// also be posted to as issue comments — see RepoPair.SocialFanout.
+type SocialFanoutTarget struct {
+	Forgejo     ForgejoTarget `yaml:"forgejo"`
+	MapPairName string        `yaml:"map_pair_name"`
 }
 
 // BlueskyTarget identifies the Bluesky account to post mirror activity to.
@@ -176,6 +197,14 @@ func (r RepoPair) validate() error {
 	if r.Bluesky != nil {
 		if r.Bluesky.Handle == "" || r.Bluesky.AppPasswordFile == "" {
 			return fmt.Errorf("bluesky.handle and app_password_file are required when bluesky is set")
+		}
+	}
+	for i, f := range r.SocialFanout {
+		if f.Forgejo.BaseURL == "" || f.Forgejo.Owner == "" || f.Forgejo.Repo == "" || f.Forgejo.TokenFile == "" {
+			return fmt.Errorf("social_fanout[%d]: forgejo.base_url, owner, repo and token_file are required", i)
+		}
+		if f.MapPairName == "" {
+			return fmt.Errorf("social_fanout[%d]: map_pair_name is required", i)
 		}
 	}
 	return nil

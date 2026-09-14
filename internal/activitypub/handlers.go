@@ -336,11 +336,13 @@ type inboxActivity struct {
 }
 
 func (h *Handler) inbox(w http.ResponseWriter, r *http.Request, series string) {
+	h.log.Info("ap inbox: request received", "series", series)
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxInboxBody))
 	if err != nil {
 		http.Error(w, "read body", http.StatusBadRequest)
 		return
 	}
+	h.log.Info("ap inbox: body read", "series", series, "bytes", len(body), "body", string(body))
 
 	var act inboxActivity
 	if err := json.Unmarshal(body, &act); err != nil || act.Actor == "" {
@@ -354,8 +356,10 @@ func (h *Handler) inbox(w http.ResponseWriter, r *http.Request, series string) {
 		http.Error(w, "could not resolve actor", http.StatusBadGateway)
 		return
 	}
+	h.log.Info("ap inbox: actor resolved", "series", series, "actor", act.Actor)
 	pub, err := ParsePublicKey(remoteActor.PublicKey.PublicKeyPem)
 	if err != nil {
+		h.log.Error("ap inbox: parse actor public key", "series", series, "actor", act.Actor, "err", err)
 		http.Error(w, "invalid actor public key", http.StatusBadGateway)
 		return
 	}
@@ -364,6 +368,7 @@ func (h *Handler) inbox(w http.ResponseWriter, r *http.Request, series string) {
 		http.Error(w, "signature verification failed", http.StatusUnauthorized)
 		return
 	}
+	h.log.Info("ap inbox: signature verified, dispatching", "series", series, "type", act.Type)
 
 	switch act.Type {
 	case "Follow":
@@ -432,6 +437,7 @@ type inboxNote struct {
 // and best-effort, same trust model as the rest of graft's mirroring: never
 // blocks or fails the inbox response, just logs and moves on.
 func (h *Handler) handleReply(series string, remoteActor *Actor, note inboxNote) {
+	h.log.Info("ap reply: entered handleReply", "series", series, "inReplyTo", note.InReplyTo, "host", h.host)
 	noteSeries, entryID, ok := ParseNoteURI(h.host, note.InReplyTo)
 	if !ok || noteSeries != series {
 		h.log.Warn("ap reply: note URI did not parse or series mismatch", "series", series, "inReplyTo", note.InReplyTo, "parsedSeries", noteSeries, "ok", ok)

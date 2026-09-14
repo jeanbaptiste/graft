@@ -29,6 +29,9 @@ type RepoSyncer struct {
 	patches  *PatchSyncer
 	wiki    *wiki.Client // this pair's Forgejo wiki — social replies land here when the token allows it, else fall back to an issue comment (see LogSocialReply)
 
+	state  *state.Store
+	fanout []fanoutTarget // see config.RepoPair.SocialFanout
+
 	wikiModeMu   sync.Mutex
 	wikiModeKnow bool // false until LogSocialReply has decided a mode at least once
 	wikiModeWiki bool // last decided mode, valid only if wikiModeKnow
@@ -48,7 +51,18 @@ func New(pair config.RepoPair, st *state.Store, workDir string) (*RepoSyncer, er
 		return nil, fmt.Errorf("resolve forgejo repository: %w", err)
 	}
 
-	rs := &RepoSyncer{pair: pair, forgejo: fc, wiki: wiki.New(pair.Forgejo.BaseURL, pair.Forgejo.Owner, pair.Forgejo.Repo, token)}
+	rs := &RepoSyncer{pair: pair, forgejo: fc, wiki: wiki.New(pair.Forgejo.BaseURL, pair.Forgejo.Owner, pair.Forgejo.Repo, token), state: st}
+
+	for _, f := range pair.SocialFanout {
+		fanoutToken, err := config.ReadToken(f.Forgejo.TokenFile)
+		if err != nil {
+			return nil, fmt.Errorf("social_fanout %s: %w", f.Forgejo.BaseURL, err)
+		}
+		rs.fanout = append(rs.fanout, fanoutTarget{
+			forgejo:     forgejo.New(f.Forgejo.BaseURL, f.Forgejo.Owner, f.Forgejo.Repo, fanoutToken),
+			mapPairName: f.MapPairName,
+		})
+	}
 
 	forgejoWebURL := strings.TrimRight(pair.Forgejo.BaseURL, "/") + "/" + pair.Forgejo.Owner + "/" + pair.Forgejo.Repo
 
@@ -300,6 +314,8 @@ func (rs *RepoSyncer) LogSocialReply(platform, author, body, itemKind, itemTitle
 	entry := fmt.Sprintf("### %s\n\n%s &middot; %s\n\n**%s** wrote:\n\n%s\n",
 		occurredAt.UTC().Format("2006-01-02 15:04 UTC"), link, itemKind, author, quoted)
 
+	rs.fanoutSocialReply(itemKind, radicleID, platform, author, body)
+
 	err := rs.wiki.AppendEntry(page, header, entry)
 	if err == nil {
 		rs.noteWikiMode(true)
@@ -311,6 +327,43 @@ func (rs *RepoSyncer) LogSocialReply(platform, author, body, itemKind, itemTitle
 	rs.noteWikiMode(false)
 	tagged := fmt.Sprintf("via %s, %s:\n\n%s", platform, author, body)
 	return rs.CommentOnItem(itemKind, forgejoID, radicleID, tagged)
+}
+
+// fanoutTarget is one extra Forgejo instance LogSocialReply also posts to
+// — see config.RepoPair.SocialFanout.
+type fanoutTarget struct {
+	forgejo     *forgejo.Client
+	mapPairName string
+}
+
+// fanoutSocialReply best-effort posts a social reply as an issue comment
+// on every configured fanout target, resolving each target's own issue
+// number via mapPairName's item_mapping (already maintained by whatever
+// sync actually links radicleID to that instance — see
+// config.RepoPair.SocialFanout's doc comment; this never talks to
+// Radicle directly itself). Silently skips a target with no resolvable
+// mapping — that's the expected, common case for anything not yet
+// mirrored there — and only logs on a real API failure, since a fanout
+// target failing must never fail the caller's primary wiki/fallback
+// write.
+func (rs *RepoSyncer) fanoutSocialReply(itemKind, radicleID, platform, author, body string) {
+	if len(rs.fanout) == 0 || radicleID == "" {
+		return
+	}
+	tagged := fmt.Sprintf("via %s, %s:\n\n%s", platform, author, body)
+	for _, f := range rs.fanout {
+		m, err := rs.state.FindByRadicleID(f.mapPairName, itemKind, radicleID)
+		if err != nil {
+			slog.Error("social fanout: resolve mapping", "pair", rs.pair.Name, "map_pair", f.mapPairName, "err", err)
+			continue
+		}
+		if m == nil {
+			continue // not (yet) mirrored to this target under that pair — nothing to comment on
+		}
+		if err := f.forgejo.CreateIssueComment(m.ForgejoID, tagged); err != nil {
+			slog.Error("social fanout: post comment", "pair", rs.pair.Name, "map_pair", f.mapPairName, "issue", m.ForgejoID, "err", err)
+		}
+	}
 }
 
 // noteWikiMode logs a WARN the first time this pair's wiki-writability
