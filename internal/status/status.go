@@ -598,7 +598,11 @@ func buildSeriesRows(entries []state.ActivityEntry, health map[string]bool, topo
 				// when the failed pass actually ran — an archived marker in
 				// the timeline itself, not a floating badge next to the
 				// label that tells you a failure happened but not when.
-				errCell := event{Kind: "error", Label: "Error", Text: sub.err, When: sub.errAt.Format("Mon, Jan 2, 15:04")}
+				// URL points at the mirror's own repo (no single commit/
+				// issue is "the" failure) so the pastille is a direct link
+				// too, same as every other cell, rather than the one dead
+				// click in the row.
+				errCell := event{Kind: "error", Label: "Error", Text: sub.err, URL: sub.url, When: sub.errAt.Format("Mon, Jan 2, 15:04")}
 				pos := len(cells)
 				for i, ent := range es {
 					if sub.errAt.Before(ent.OccurredAt) {
@@ -904,7 +908,10 @@ var dashboardTmpl = template.Must(template.New("dashboard").Parse(`<!doctype htm
   .cell {
     flex: none; width: 10px; height: 22px; border-radius: 3px;
     background: var(--border); position: relative; cursor: default;
+    display: block; text-decoration: none;
   }
+  a.cell { cursor: pointer; }
+  a.cell:hover { filter: brightness(1.25); }
   .cell[data-kind="git"] { background: var(--kind-git); }
   .cell[data-kind="issue"] { background: var(--kind-issue); }
   .cell[data-kind="patch"] { background: var(--kind-patch); }
@@ -926,11 +933,10 @@ var dashboardTmpl = template.Must(template.New("dashboard").Parse(`<!doctype htm
   .cell:nth-last-child(-n+2) .tip { left: auto; right: 0; transform: none; }
   .cell:hover .tip, .tip:hover { display: block; }
   .tip .tip-date { padding: 0 .75rem .35rem; font-weight: 600; border-bottom: 1px solid rgba(255,255,255,.15); margin-bottom: .35rem; }
-  .tip a.tip-row {
-    display: flex; gap: .4em; padding: .3rem .75rem; color: #fff; text-decoration: none;
+  .tip .tip-row {
+    display: flex; gap: .4em; padding: .3rem .75rem; color: #fff;
     white-space: normal; overflow-wrap: anywhere; line-height: 1.35;
   }
-  .tip a.tip-row:hover { background: rgba(255,255,255,.12); }
   .tip .tip-kind { color: #b3bac5; flex: none; }
   .tip .tip-empty { padding: 0 .75rem; color: #b3bac5; }
   .tip .tip-note {
@@ -1010,14 +1016,14 @@ var dashboardTmpl = template.Must(template.New("dashboard").Parse(`<!doctype htm
             {{end}}
             <div class="days">
             {{range .Events}}
+              {{if .URL}}
+              <a class="cell" data-kind="{{.Kind}}" href="{{.URL}}" target="_blank" rel="noopener">
+              {{else}}
               <div class="cell" data-kind="{{.Kind}}">
+              {{end}}
                 <div class="tip">
                   <div class="tip-date">{{.When}}</div>
-                  {{if .URL}}
-                  <a class="tip-row" href="{{.URL}}" target="_blank" rel="noopener"><span class="tip-kind">{{.Label}}</span>{{.Text}}</a>
-                  {{else}}
                   <span class="tip-row"><span class="tip-kind">{{.Label}}</span>{{.Text}}</span>
-                  {{end}}
                   {{if eq .Kind "error"}}
                   <div class="tip-note">sync pass failed at this point</div>
                   {{end}}
@@ -1030,7 +1036,7 @@ var dashboardTmpl = template.Must(template.New("dashboard").Parse(`<!doctype htm
                   <div class="tip-note">via {{.Origin}}</div>
                   {{end}}
                 </div>
-              </div>
+              {{if .URL}}</a>{{else}}</div>{{end}}
             {{else}}
               <span class="tip-empty">nothing synced</span>
             {{end}}
