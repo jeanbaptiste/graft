@@ -240,7 +240,6 @@ const pageTemplate = `<!DOCTYPE html>
 <div class="wrap">
 <nav class="crumbs">%s</nav>
 %s
-<footer>Rendered automatically from the Forgejo wiki by graft's wikirender job — edits here are not preserved; edit the wiki directly.</footer>
 </div>
 </body>
 </html>

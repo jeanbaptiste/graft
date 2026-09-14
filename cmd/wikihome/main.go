@@ -142,7 +142,7 @@ func main() {
 			info := platformInfo[key]
 			sb.WriteString(fmt.Sprintf("- **[%s](%s)** — %s\n", info.label, key, info.blurb))
 		}
-		sb.WriteString("\n---\n\nMaintained automatically by [graft](https://github.com/jeanbaptiste/graft). Edits to the individual platform pages are not preserved; this landing page can be edited freely.\n")
+		sb.WriteString("\n---\n\nMaintained automatically by [graft](https://github.com/jeanbaptiste/graft).\n")
 
 		home := sb.String()
 
