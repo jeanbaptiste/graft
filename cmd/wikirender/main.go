@@ -97,8 +97,16 @@ func getPageContent(client *http.Client, token, base, owner, repo, subURL string
 // lists) — not arbitrary CommonMark. ---
 
 var (
-	reBold       = regexp.MustCompile(`\*\*(.+?)\*\*`)
-	reLink       = regexp.MustCompile(`\[([^\]]*)\]\(([^)]+)\)`)
+	reBold = regexp.MustCompile(`\*\*(.+?)\*\*`)
+	// Non-greedy across the link text, not "any run of non-] chars": a
+	// mirrored issue title that itself starts with a literal bracketed
+	// tag ("[TEST-PIPELINE] Post-incident...") has a "]" inside the link
+	// text itself, which the old [^\]]* stopped at — truncating the
+	// match and leaving the rest of the line, including the real "](url)",
+	// as literal unrendered text. .*? still finds the correct (leftmost,
+	// shortest) "](" boundary since that sequence only occurs once at
+	// the link's actual end.
+	reLink       = regexp.MustCompile(`\[(.*?)\]\(([^)]+)\)`)
 	reHeading    = regexp.MustCompile(`^(#{1,3})\s+(.*)$`)
 	reBullet     = regexp.MustCompile(`^-\s+(.*)$`)
 	reSocialPage = regexp.MustCompile(`^Social-([A-Za-z]+)$`)
