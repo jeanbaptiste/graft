@@ -30,12 +30,13 @@ type Config struct {
 
 // RepoPair links one Forgejo repository to either one Radicle repository or
 // a second Forgejo repository, and declares which content types are kept in
-// sync between them. Exactly one of Radicle and ForgejoMirror is set: the
-// Radicle case is the original, fully-featured pairing (git, issues,
-// patches); the ForgejoMirror case is a plain Forgejo-to-Forgejo git mirror
-// for series that have no Radicle side at all — issues and patches aren't
-// supported there yet, since that mirroring logic is written entirely in
-// terms of a Radicle client (see internal/sync/issues.go, patches.go).
+// sync between them. Exactly one of Radicle and ForgejoMirror is set. Both
+// support git + issues (see internal/sync/issues.go for the Radicle case,
+// issues_ff.go for the Forgejo-to-Forgejo case); patch mirroring is
+// Radicle-only for now — that logic stays written entirely in terms of a
+// Radicle client (internal/sync/patches.go), since a "patch" is a
+// Radicle-specific concept without a direct Forgejo PR equivalent to
+// generically diff against a second Forgejo the way issues can be.
 type RepoPair struct {
 	Name          string         `yaml:"name"`
 	Forgejo       ForgejoTarget  `yaml:"forgejo"`
@@ -165,8 +166,8 @@ func (r RepoPair) validate() error {
 		if r.ForgejoMirror.TokenFile == "" {
 			return fmt.Errorf("forgejo_mirror.token_file is required")
 		}
-		if r.Sync.Issues || r.Sync.Patches {
-			return fmt.Errorf("forgejo_mirror pairs only support sync.git — issues/patches mirroring needs a Radicle side")
+		if r.Sync.Patches {
+			return fmt.Errorf("forgejo_mirror pairs don't support sync.patches yet — patch mirroring needs a Radicle side")
 		}
 	}
 	if !r.Sync.Git && !r.Sync.Issues && !r.Sync.Patches {

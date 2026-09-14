@@ -42,11 +42,20 @@ func TestValidateAcceptsForgejoMirrorOnly(t *testing.T) {
 	}
 }
 
-func TestValidateRejectsIssuesOrPatchesOnForgejoMirror(t *testing.T) {
+func TestValidateAllowsIssuesOnForgejoMirror(t *testing.T) {
 	p := validPair()
 	p.ForgejoMirror = &ForgejoTarget{BaseURL: "https://f2", Owner: "o", Repo: "r", TokenFile: "/tmp/t2"}
 	p.Sync.Issues = true
+	if err := p.validate(); err != nil {
+		t.Fatalf("expected forgejo_mirror + sync.issues to be valid (issues_ff.go supports it): %v", err)
+	}
+}
+
+func TestValidateRejectsPatchesOnForgejoMirror(t *testing.T) {
+	p := validPair()
+	p.ForgejoMirror = &ForgejoTarget{BaseURL: "https://f2", Owner: "o", Repo: "r", TokenFile: "/tmp/t2"}
+	p.Sync.Patches = true
 	if err := p.validate(); err == nil {
-		t.Fatal("expected error: forgejo_mirror pairs don't support issue sync")
+		t.Fatal("expected error: forgejo_mirror pairs don't support patch sync")
 	}
 }

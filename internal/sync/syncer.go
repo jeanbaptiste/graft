@@ -22,10 +22,11 @@ type RepoSyncer struct {
 	pair    config.RepoPair
 	forgejo *forgejo.Client
 	radicle *radicle.Client
-	git     *GitSyncer
-	gitFF   *GitSyncerFF // set instead of git when pair.ForgejoMirror is used
-	issues  *IssueSyncer
-	patches *PatchSyncer
+	git      *GitSyncer
+	gitFF    *GitSyncerFF // set instead of git when pair.ForgejoMirror is used
+	issues   *IssueSyncer
+	issuesFF *IssueSyncerFF // set instead of issues when pair.ForgejoMirror is used
+	patches  *PatchSyncer
 	wiki    *wiki.Client // this pair's Forgejo wiki — social replies land here when the token allows it, else fall back to an issue comment (see LogSocialReply)
 
 	wikiModeMu   sync.Mutex
@@ -94,6 +95,13 @@ func New(pair config.RepoPair, st *state.Store, workDir string) (*RepoSyncer, er
 				Series:        series,
 				SeriesURL:     forgejoWebURL,
 				Bluesky:       bluesky,
+			}
+		}
+		if pair.Sync.Issues {
+			rs.issuesFF = &IssueSyncerFF{
+				RepoPair: pair.Name, A: fc, B: mfc, State: st,
+				AWebURL: forgejoWebURL, BWebURL: mirrorWebURL,
+				Series: series, SeriesURL: forgejoWebURL,
 			}
 		}
 		return rs, nil
@@ -366,6 +374,11 @@ func (rs *RepoSyncer) Run(log *slog.Logger) (gitErr, issuesErr, patchErr error) 
 	}
 	if rs.issues != nil {
 		if issuesErr = rs.issues.Sync(); issuesErr != nil {
+			log.Error("issue sync failed", "err", issuesErr)
+		}
+	}
+	if rs.issuesFF != nil {
+		if issuesErr = rs.issuesFF.Sync(); issuesErr != nil {
 			log.Error("issue sync failed", "err", issuesErr)
 		}
 	}
