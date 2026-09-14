@@ -74,6 +74,21 @@ func (c *Client) AppendEntry(pageTitle, header, entryMarkdown string) error {
 	return c.updatePage(pageTitle, content, sha)
 }
 
+// ResetPage overwrites pageTitle's content back to just its header plus an
+// empty entries marker — an update, not a delete, used to fix a page whose
+// entries were written in the wrong order rather than removing it outright.
+func (c *Client) ResetPage(pageTitle, header string) error {
+	content := header + "\n\n" + entriesMarker + "\n"
+	_, sha, err := c.getPage(pageTitle)
+	if err != nil {
+		return fmt.Errorf("get wiki page %q: %w", pageTitle, err)
+	}
+	if sha == "" {
+		return c.createPage(pageTitle, content)
+	}
+	return c.updatePage(pageTitle, content, sha)
+}
+
 // slugFor resolves a page title to the slug Forgejo actually files it
 // under. Forgejo's wiki filename-escaping scheme mangles a title
 // containing a hyphen — "Social-Discourse" gets stored (and must be

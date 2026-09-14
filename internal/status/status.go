@@ -455,7 +455,8 @@ func buildSeriesRows(entries []state.ActivityEntry, health map[string]bool, topo
 		// pass was clean). Set from pairResults via the topology's
 		// PairName, so it reflects reality even before this side has
 		// ever logged an event of its own.
-		err string
+		err   string
+		errAt time.Time
 		// byKey indexes events by dedupKey — built once per side right
 		// before rendering, see buildSeriesRows.
 		byKey map[string]state.ActivityEntry
@@ -500,6 +501,7 @@ func buildSeriesRows(entries []state.ActivityEntry, health map[string]bool, topo
 			sub.ai = ref.AuthorizedIntegration
 			if pr, ok := pairResults[ref.PairName]; ok {
 				sub.err = pr.errText()
+				sub.errAt = pr.LastRun
 			}
 		}
 	}
@@ -591,7 +593,21 @@ func buildSeriesRows(entries []state.ActivityEntry, health map[string]bool, topo
 				es := make([]state.ActivityEntry, len(sub.events))
 				copy(es, sub.events)
 				sort.Slice(es, func(i, j int) bool { return es[i].OccurredAt.Before(es[j].OccurredAt) })
-				subRows = append(subRows, subRow{Label: label, URL: sub.url, Events: toEvents(es), Error: sub.err})
+				cells := toEvents(es)
+				// Splice the error itself in as its own cell, positioned by
+				// when the failed pass actually ran — an archived marker in
+				// the timeline itself, not a floating badge next to the
+				// label that tells you a failure happened but not when.
+				errCell := event{Kind: "error", Label: "Error", Text: sub.err, When: sub.errAt.Format("Mon, Jan 2, 15:04")}
+				pos := len(cells)
+				for i, ent := range es {
+					if sub.errAt.Before(ent.OccurredAt) {
+						pos = i
+						break
+					}
+				}
+				cells = append(cells[:pos], append([]event{errCell}, cells[pos:]...)...)
+				subRows = append(subRows, subRow{Label: label, URL: sub.url, Events: cells, Error: sub.err})
 				continue
 			}
 
@@ -884,13 +900,7 @@ var dashboardTmpl = template.Must(template.New("dashboard").Parse(`<!doctype htm
   }
   a.subrow-name { color: var(--brand); }
   a.subrow-name:hover { text-decoration: underline; }
-  .subrow-err {
-    flex: none; width: 10px; height: 10px; border-radius: 3px;
-    background: var(--bad); cursor: default; position: relative;
-  }
-  .subrow-err .tip { min-width: 16rem; white-space: normal; }
-  .subrow-err:hover .tip { display: block; }
-  .days { display: flex; gap: 3px; flex-wrap: wrap; }
+  .days { display: flex; gap: 3px; flex-wrap: wrap; align-items: center; }
   .cell {
     flex: none; width: 10px; height: 22px; border-radius: 3px;
     background: var(--border); position: relative; cursor: default;
@@ -899,6 +909,11 @@ var dashboardTmpl = template.Must(template.New("dashboard").Parse(`<!doctype htm
   .cell[data-kind="issue"] { background: var(--kind-issue); }
   .cell[data-kind="patch"] { background: var(--kind-patch); }
   .cell[data-kind="comment"] { background: var(--kind-comment); }
+  /* Error cell: a round red pastille, not a square, so a failed pass
+     reads as a distinct marker archived in the timeline at the moment
+     it happened — never a badge floating next to the label. */
+  .cell[data-kind="error"] { width: 10px; height: 10px; border-radius: 50%; background: var(--bad); align-self: center; }
+  .cell[data-kind="error"] .tip { min-width: 16rem; white-space: normal; }
 
   .tip {
     display: none; position: absolute; top: calc(100% + 8px); left: 50%; transform: translateX(-50%);
@@ -988,9 +1003,6 @@ var dashboardTmpl = template.Must(template.New("dashboard").Parse(`<!doctype htm
         <div class="subrows">
         {{range .SubRows}}
           <div class="subrow">
-            {{if .Error}}
-            <span class="subrow-err"><div class="tip"><div class="tip-date">last pass failed</div><div class="tip-note">{{.Error}}</div></div></span>
-            {{end}}
             {{if .URL}}
             <a class="subrow-name" href="{{.URL}}" target="_blank" rel="noopener">{{.Label}}</a>
             {{else}}
@@ -1005,6 +1017,9 @@ var dashboardTmpl = template.Must(template.New("dashboard").Parse(`<!doctype htm
                   <a class="tip-row" href="{{.URL}}" target="_blank" rel="noopener"><span class="tip-kind">{{.Label}}</span>{{.Text}}</a>
                   {{else}}
                   <span class="tip-row"><span class="tip-kind">{{.Label}}</span>{{.Text}}</span>
+                  {{end}}
+                  {{if eq .Kind "error"}}
+                  <div class="tip-note">sync pass failed at this point</div>
                   {{end}}
                   {{if eq .State "source"}}
                   <div class="tip-note">origin of this content — mirrored out from here, via {{.OriginLabel}}</div>
