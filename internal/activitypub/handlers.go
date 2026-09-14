@@ -87,7 +87,7 @@ type Handler struct {
 	// at all.
 	repoURL    func(series string) string
 	known      func(series string) bool
-	postSocial func(repoPair, platform, author, body, itemKind, itemTitle, itemURL string) error
+	postSocial func(repoPair, platform, author, body, itemKind, itemTitle, itemURL string, forgejoID int64, radicleID string) error
 	radicleDID func(series string) string
 	client     *http.Client
 }
@@ -98,7 +98,7 @@ func NewHandler(
 	log *slog.Logger,
 	repoURL func(series string) string,
 	known func(series string) bool,
-	postSocial func(repoPair, platform, author, body, itemKind, itemTitle, itemURL string) error,
+	postSocial func(repoPair, platform, author, body, itemKind, itemTitle, itemURL string, forgejoID int64, radicleID string) error,
 	radicleDID func(series string) string,
 ) *Handler {
 	return &Handler{
@@ -461,7 +461,7 @@ func (h *Handler) handleReply(series string, remoteActor *Actor, note inboxNote)
 	if itemTitle == "" {
 		itemTitle = e.RepoPair
 	}
-	if err := h.postSocial(e.RepoPair, platform, author, body, e.Kind, itemTitle, e.URL); err != nil {
+	if err := h.postSocial(e.RepoPair, platform, author, body, e.Kind, itemTitle, e.URL, e.ForgejoID, e.RadicleID); err != nil {
 		h.log.Error("ap reply: log social reply", "series", series, "platform", platform, "repo_pair", e.RepoPair, "err", err)
 		return
 	}

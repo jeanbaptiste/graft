@@ -137,7 +137,7 @@ func pollSeriesReplies(series, handle, appPassword, pdsHost string, live *liveSt
 		if itemTitle == "" {
 			itemTitle = e.RepoPair
 		}
-		if err := rs.LogSocialReply("Bluesky", "@"+n.Author.Handle, strings.TrimSpace(n.Record.Text), e.Kind, itemTitle, e.URL, time.Now()); err != nil {
+		if err := rs.LogSocialReply("Bluesky", "@"+n.Author.Handle, strings.TrimSpace(n.Record.Text), e.Kind, itemTitle, e.URL, e.ForgejoID, e.RadicleID, time.Now()); err != nil {
 			log.Error("bluesky reply: log social reply", "series", series, "repo_pair", e.RepoPair, "err", err)
 			continue
 		}

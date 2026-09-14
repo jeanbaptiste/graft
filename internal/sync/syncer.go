@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"graft/internal/config"
@@ -25,7 +26,11 @@ type RepoSyncer struct {
 	gitFF   *GitSyncerFF // set instead of git when pair.ForgejoMirror is used
 	issues  *IssueSyncer
 	patches *PatchSyncer
-	wiki    *wiki.Client // this pair's Forgejo wiki — social replies land here, not as issue comments
+	wiki    *wiki.Client // this pair's Forgejo wiki — social replies land here when the token allows it, else fall back to an issue comment (see LogSocialReply)
+
+	wikiModeMu   sync.Mutex
+	wikiModeKnow bool // false until LogSocialReply has decided a mode at least once
+	wikiModeWiki bool // last decided mode, valid only if wikiModeKnow
 }
 
 // New builds a RepoSyncer for one configured pair. workDir is where this
@@ -247,11 +252,32 @@ func (rs *RepoSyncer) CommentOnItem(kind string, forgejoID int64, radicleID, bod
 // LogSocialReply appends one social-platform reply to this pair's own
 // Forgejo wiki, on a page dedicated to platform ("Social-Discourse",
 // "Social-Bluesky", "Social-Mastodon", "Social-Zulip", "Social-Tangled" —
-// created on first use). This is where social discussion lands instead of
-// as a real Forgejo/Radicle issue comment — see internal/wiki's package
-// doc for why. itemTitle/itemURL/itemKind describe the mirrored
-// issue/patch the reply is about, for context in the timeline entry.
-func (rs *RepoSyncer) LogSocialReply(platform, author, body, itemKind, itemTitle, itemURL string, occurredAt time.Time) error {
+// created on first use). This is where social discussion normally lands
+// instead of as a real Forgejo/Radicle issue comment — see internal/wiki's
+// package doc for why.
+//
+// Not every pair's token can actually write wiki pages: a pair graft only
+// observes rather than pushes to (a third-party Forgejo instance sharing
+// the same Radicle repo, deliberately configured with a read-only token)
+// gets a 403 from the wiki API. There is no reliable way to predict this
+// in advance — a repo's own GET .../repos/{owner}/{repo} "permissions"
+// object reflects the underlying account's collaborator rights, not the
+// presented token's own scope restriction, confirmed directly against a
+// live instance where it reported push=true for a token that then 403'd
+// on the actual write. So LogSocialReply always attempts the wiki write
+// first and only falls back to CommentOnItem — the original
+// Forgejo/Radicle issue-comment path — when that attempt itself comes
+// back as wiki.ErrForbidden. forgejoID/radicleID identify the underlying
+// mirrored item for that fallback; itemKind/itemTitle/itemURL describe it
+// for the wiki timeline entry when the wiki write succeeds.
+//
+// This does mean a single pair's social history can end up split across
+// the wiki and issue comments if its token's scope changes mid-flight
+// (exactly what prompted this: a token gaining or losing write:repository
+// between graft restarts). That split is never silent — see the WARN log
+// below — but it is not reconciled retroactively; entries already written
+// stay where they were written.
+func (rs *RepoSyncer) LogSocialReply(platform, author, body, itemKind, itemTitle, itemURL string, forgejoID int64, radicleID string, occurredAt time.Time) error {
 	page := "Social-" + platform
 	header := fmt.Sprintf(
 		"# Social — %s\n\nDiscussion about this repository mirrored from **%s**, newest first. "+
@@ -266,7 +292,41 @@ func (rs *RepoSyncer) LogSocialReply(platform, author, body, itemKind, itemTitle
 	entry := fmt.Sprintf("### %s\n\n%s &middot; %s\n\n**%s** wrote:\n\n%s\n",
 		occurredAt.UTC().Format("2006-01-02 15:04 UTC"), link, itemKind, author, quoted)
 
-	return rs.wiki.AppendEntry(page, header, entry)
+	err := rs.wiki.AppendEntry(page, header, entry)
+	if err == nil {
+		rs.noteWikiMode(true)
+		return nil
+	}
+	if !errors.Is(err, wiki.ErrForbidden) {
+		return err
+	}
+	rs.noteWikiMode(false)
+	tagged := fmt.Sprintf("via %s, %s:\n\n%s", platform, author, body)
+	return rs.CommentOnItem(itemKind, forgejoID, radicleID, tagged)
+}
+
+// noteWikiMode logs a WARN the first time this pair's wiki-writability
+// differs from what it was last time, so a token-scope change (the
+// operator adding or removing write:repository) always shows up in
+// graft's own logs instead of silently splitting a series' social history
+// across two places.
+func (rs *RepoSyncer) noteWikiMode(writable bool) {
+	rs.wikiModeMu.Lock()
+	defer rs.wikiModeMu.Unlock()
+	if rs.wikiModeKnow && rs.wikiModeWiki == writable {
+		return
+	}
+	changed := rs.wikiModeKnow
+	rs.wikiModeKnow = true
+	rs.wikiModeWiki = writable
+	if !changed {
+		return // first decision ever for this pair — nothing to flag as a change
+	}
+	if writable {
+		slog.Warn("social replies switched to wiki (token regained write access)", "pair", rs.pair.Name)
+	} else {
+		slog.Warn("social replies switched to issue comments (token lost write access to wiki)", "pair", rs.pair.Name)
+	}
 }
 
 // RadicleDID returns the local Radicle node identity this pair pushes as,

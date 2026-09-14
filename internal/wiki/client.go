@@ -12,12 +12,29 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"time"
 )
+
+// ErrForbidden means the token this Client was built with cannot write to
+// this repo's wiki (Forgejo returns 403 with a "missing scope:
+// write:repository" message). Callers should treat this as "fall back to
+// a different write path", not as a transient failure to retry.
+//
+// Checked by trying the real write and inspecting the response, not by
+// predicting it in advance: a repo's GET .../repos/{owner}/{repo}
+// "permissions.push" field reflects the underlying account's collaborator
+// permission on the repo, not the presented token's own OAuth-style
+// scope restriction — confirmed directly against a live instance, where
+// a deliberately read-only-scoped token for an account that does have
+// push rights on the repo still reported permissions.push=true, only to
+// then 403 on the actual write. Predicting from that field would have
+// been silently wrong.
+var ErrForbidden = errors.New("wiki: token lacks write:repository scope")
 
 // entriesMarker delimits a page's fixed header from its entries, so a new
 // entry can be inserted right after it (newest-first) without disturbing
@@ -109,6 +126,13 @@ func (c *Client) slugFor(title string) (string, error) {
 	}
 	defer resp.Body.Close()
 	b, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if resp.StatusCode == http.StatusNotFound {
+		// A repo whose wiki has never had a single page saved has no
+		// .wiki.git at all yet — confirmed directly against a live
+		// instance, where this 404s instead of returning an empty list.
+		// No pages exist yet, not an error.
+		return "", nil
+	}
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("list wiki pages: HTTP %d: %s", resp.StatusCode, truncate(b, 300))
 	}
@@ -214,6 +238,10 @@ func (c *Client) do(method, u string, body []byte) error {
 		return err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusForbidden {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		return fmt.Errorf("%s %s: %w: %s", method, u, ErrForbidden, truncate(b, 300))
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		return fmt.Errorf("%s %s: HTTP %d: %s", method, u, resp.StatusCode, truncate(b, 300))
