@@ -16,8 +16,16 @@ const mirrorMarker = "​​graft:mirrored​"
 
 // MarkMirrored appends the invisible marker to a comment body that's
 // about to be posted as a mirror of content from elsewhere.
+//
+// Separated from body by a real newline, not appended directly: a body
+// ending in a bare URL (a commit link, say) has no visible character
+// between it and the marker, so Forgejo's autolinker doesn't stop at the
+// URL's actual end — it swallows the zero-width characters and the
+// literal text "graft:mirrored" right into the link target, producing a
+// dead link (confirmed live: .../commit/<sha> resolves, .../commit/<sha>graft:mirrored
+// 404s). A newline is a hard boundary no autolinker crosses.
 func MarkMirrored(body string) string {
-	return body + mirrorMarker
+	return body + "\n" + mirrorMarker
 }
 
 // IsMirroredComment reports whether body carries graft's own mirror
