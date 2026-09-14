@@ -443,7 +443,9 @@ func (h *Handler) handleReply(series string, remoteActor *Actor, note inboxNote)
 		h.log.Warn("ap reply: note URI did not parse or series mismatch", "series", series, "inReplyTo", note.InReplyTo, "parsedSeries", noteSeries, "ok", ok)
 		return
 	}
+	h.log.Info("ap reply: note URI parsed, loading activity", "series", series, "entryID", entryID)
 	e, err := h.store.ActivityByID(entryID)
+	h.log.Info("ap reply: activity load returned", "series", series, "entryID", entryID, "found", e != nil, "err", err)
 	if err != nil {
 		h.log.Error("ap reply: load activity", "series", series, "id", entryID, "err", err)
 		return
@@ -470,6 +472,7 @@ func (h *Handler) handleReply(series string, remoteActor *Actor, note inboxNote)
 	// reply carries no such tag, since nothing bridged it. Route by that
 	// tag so each platform's replies land on their own wiki page.
 	platform, author, body := detectPlatform(content, who)
+	h.log.Info("ap reply: platform detected, calling postSocial", "series", series, "repo_pair", e.RepoPair, "platform", platform, "kind", e.Kind)
 
 	itemTitle := e.Summary
 	if itemTitle == "" {

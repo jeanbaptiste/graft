@@ -300,6 +300,7 @@ func (rs *RepoSyncer) CommentOnItem(kind string, forgejoID int64, radicleID, bod
 // below — but it is not reconciled retroactively; entries already written
 // stay where they were written.
 func (rs *RepoSyncer) LogSocialReply(platform, author, body, itemKind, itemTitle, itemURL string, forgejoID int64, radicleID string, occurredAt time.Time) error {
+	slog.Info("LogSocialReply: entered", "pair", rs.pair.Name, "platform", platform, "fanoutCount", len(rs.fanout))
 	page := "Social-" + platform
 	header := fmt.Sprintf(
 		"# Social — %s\n\nDiscussion about this repository mirrored from **%s**, newest first. "+
@@ -314,9 +315,12 @@ func (rs *RepoSyncer) LogSocialReply(platform, author, body, itemKind, itemTitle
 	entry := fmt.Sprintf("### %s\n\n%s &middot; %s\n\n**%s** wrote:\n\n%s\n",
 		occurredAt.UTC().Format("2006-01-02 15:04 UTC"), link, itemKind, author, quoted)
 
+	slog.Info("LogSocialReply: before fanout", "pair", rs.pair.Name)
 	rs.fanoutSocialReply(itemKind, radicleID, platform, author, body)
+	slog.Info("LogSocialReply: after fanout, before wiki write", "pair", rs.pair.Name)
 
 	err := rs.wiki.AppendEntry(page, header, entry)
+	slog.Info("LogSocialReply: wiki write returned", "pair", rs.pair.Name, "err", err)
 	if err == nil {
 		rs.noteWikiMode(true)
 		return nil

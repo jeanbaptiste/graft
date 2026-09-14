@@ -269,6 +269,7 @@ func main() {
 		}
 
 		var repoLinks []string
+		var homeOutPath, homeTitle, homeBody string
 		for _, p := range pages {
 			if strings.HasPrefix(p.Title, "_") {
 				continue // _Sidebar, _Footer: navigation, not content pages
@@ -285,18 +286,33 @@ func main() {
 				fileName = strings.ToLower(strings.ReplaceAll(p.Title, " ", "-")) + ".html"
 			}
 			outPath := filepath.Join(outRoot, r.slug, fileName)
-			crumbs := fmt.Sprintf(`<a href="/presentation/wiki/">wiki</a> &rsaquo; <a href="/presentation/wiki/%s/">%s</a> &rsaquo; %s`, r.slug, r.slug, html.EscapeString(p.Title))
+			crumbs := fmt.Sprintf(`<a href="/wiki/">wiki</a> &rsaquo; <a href="/wiki/%s/">%s</a> &rsaquo; %s`, r.slug, r.slug, html.EscapeString(p.Title))
+			if p.Title == "Home" {
+				// Deferred: the sub-page list (repoLinks) isn't complete
+				// until every page in this repo has been processed, so the
+				// Home page itself is written last, after this loop.
+				homeOutPath, homeTitle, homeBody = outPath, r.slug+" — "+p.Title, bodyHTML
+				continue
+			}
 			if err := writeHTML(outPath, r.slug+" — "+p.Title, crumbs, bodyHTML); err != nil {
 				fmt.Println(r.slug, p.Title, "write error:", err)
 				continue
 			}
-			if p.Title != "Home" {
-				repoLinks = append(repoLinks, fmt.Sprintf(`<li><a href="%s">%s</a></li>`, fileName, html.EscapeString(p.Title)))
-			}
+			repoLinks = append(repoLinks, fmt.Sprintf(`<li><a href="%s">%s</a></li>`, fileName, html.EscapeString(p.Title)))
 			fmt.Println("wrote", outPath)
 		}
+		if homeOutPath != "" {
+			if len(repoLinks) > 0 {
+				homeBody += "\n<h2>Pages</h2>\n<ul>\n" + strings.Join(repoLinks, "\n") + "\n</ul>\n"
+			}
+			crumbs := fmt.Sprintf(`<a href="/wiki/">wiki</a> &rsaquo; %s`, r.slug)
+			if err := writeHTML(homeOutPath, homeTitle, crumbs, homeBody); err != nil {
+				fmt.Println(r.slug, "Home", "write error:", err)
+			} else {
+				fmt.Println("wrote", homeOutPath)
+			}
+		}
 		indexLinks = append(indexLinks, fmt.Sprintf(`<li><a href="%s/">%s</a></li>`, r.slug, r.slug))
-		_ = repoLinks
 	}
 
 	// top-level index of every repo that has a rendered wiki
