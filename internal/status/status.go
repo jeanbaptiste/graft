@@ -912,6 +912,12 @@ var dashboardTmpl = template.Must(template.New("dashboard").Parse(`<!doctype htm
   }
   a.cell { cursor: pointer; }
   a.cell:hover { filter: brightness(1.25); }
+  /* Every cell is position:relative with z-index:auto, so they're all
+     tied and DOM order wins — a later row's cells would otherwise paint
+     over an earlier row's open tooltip. Raising just the hovered cell
+     lifts its tooltip above every sibling row without needing every
+     cell to carry a z-index all the time. */
+  .cell:hover { z-index: 5; }
   .cell[data-kind="git"] { background: var(--kind-git); }
   .cell[data-kind="issue"] { background: var(--kind-issue); }
   .cell[data-kind="patch"] { background: var(--kind-patch); }
