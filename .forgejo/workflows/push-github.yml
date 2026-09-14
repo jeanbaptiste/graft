@@ -7,20 +7,52 @@ jobs:
   mirror:
     runs-on: linux-host
     steps:
-      - name: clone and push to GitHub, notify f1 on failure
+      - name: reconcile with GitHub and push both ways, notify f1 only on real conflict
         run: |
           set +e
           rm -rf /tmp/graft-mirror
-          git clone --bare https://f1.cyberwild.org/forgeadmin/graft.git /tmp/graft-mirror
+          git clone https://f1.cyberwild.org/forgeadmin/graft.git /tmp/graft-mirror
           cd /tmp/graft-mirror
-          git push "https://x-access-token:${{ secrets.GH_PUSH_TOKEN }}@github.com/jeanbaptiste/graft.git" main:main
-          PUSH_STATUS=$?
+          git config user.email "graft@f1.cyberwild.org"
+          git config user.name "graft-ci"
+
+          # Someone may have pushed straight to GitHub since our last sync —
+          # pull those commits in first so a plain push never just refuses
+          # to overwrite them (that's the failure mode this replaced: every
+          # divergence used to dead-end in a "resolve manually" issue).
+          git remote add github "https://x-access-token:${{ secrets.GH_PUSH_TOKEN }}@github.com/jeanbaptiste/graft.git"
+          git fetch github main
+          git merge --no-edit github/main
+          MERGE_STATUS=$?
+
+          if [ "$MERGE_STATUS" -ne 0 ]; then
+            git merge --abort 2>/dev/null
+            echo "merge from GitHub failed (status $MERGE_STATUS) — real conflict, notifying f1"
+            BODY=$(python3 -c "import json; print(json.dumps({'title': 'CI: GitHub/f1 merge conflict (run ${GITHUB_RUN_NUMBER})', 'body': 'push-github could not auto-merge GitHub main into f1 main — the two histories conflict and need a human to reconcile.\n\nCompare https://github.com/jeanbaptiste/graft and https://f1.cyberwild.org/forgeadmin/graft/src/branch/main, resolve, then push.\n\nRun: https://f1.cyberwild.org/forgeadmin/graft/actions/runs/${GITHUB_RUN_NUMBER}'}))")
+            curl -s -X POST \
+              -H "Authorization: token ${{ secrets.F1_ISSUE_TOKEN }}" \
+              -H "Content-Type: application/json" \
+              --data "$BODY" \
+              "https://f1.cyberwild.org/api/v1/repos/forgeadmin/graft/issues" \
+              -o /tmp/issue-create-resp.json -w "issue create HTTP: %{http_code}\n"
+            cat /tmp/issue-create-resp.json
+            cd /
+            rm -rf /tmp/graft-mirror
+            exit 1
+          fi
+
+          # Push the merged result back to both remotes so f1 and GitHub
+          # never drift apart again after this pass.
+          git push origin main
+          F1_PUSH_STATUS=$?
+          git push github main
+          GH_PUSH_STATUS=$?
           cd /
           rm -rf /tmp/graft-mirror
 
-          if [ "$PUSH_STATUS" -ne 0 ]; then
-            echo "push to GitHub failed (status $PUSH_STATUS) — notifying f1"
-            BODY=$(python3 -c "import json; print(json.dumps({'title': 'CI: push to GitHub failed (run ${GITHUB_RUN_NUMBER})', 'body': 'push-github failed to mirror main to GitHub, exit status $PUSH_STATUS. Most likely someone pushed directly to GitHub, causing a divergence a plain git push refuses to overwrite.\n\nResolve manually: compare https://github.com/jeanbaptiste/graft and https://f1.cyberwild.org/forgeadmin/graft/src/branch/main, reconcile, then push.\n\nRun: https://f1.cyberwild.org/forgeadmin/graft/actions/runs/${GITHUB_RUN_NUMBER}'}))")
+          if [ "$F1_PUSH_STATUS" -ne 0 ] || [ "$GH_PUSH_STATUS" -ne 0 ]; then
+            echo "push failed (f1 status $F1_PUSH_STATUS, github status $GH_PUSH_STATUS) — notifying f1"
+            BODY=$(python3 -c "import json; print(json.dumps({'title': 'CI: push to GitHub or f1 failed (run ${GITHUB_RUN_NUMBER})', 'body': 'push-github merged GitHub and f1 main cleanly but a push afterward failed (f1 status $F1_PUSH_STATUS, github status $GH_PUSH_STATUS) — likely a new commit landed on one side during this run.\n\nRun: https://f1.cyberwild.org/forgeadmin/graft/actions/runs/${GITHUB_RUN_NUMBER}'}))")
             curl -s -X POST \
               -H "Authorization: token ${{ secrets.F1_ISSUE_TOKEN }}" \
               -H "Content-Type: application/json" \
@@ -30,4 +62,4 @@ jobs:
             cat /tmp/issue-create-resp.json
             exit 1
           fi
-          echo "pushed to GitHub ok"
+          echo "reconciled and pushed to both f1 and GitHub ok"
