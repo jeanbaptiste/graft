@@ -97,10 +97,11 @@ func getPageContent(client *http.Client, token, base, owner, repo, subURL string
 // lists) — not arbitrary CommonMark. ---
 
 var (
-	reBold    = regexp.MustCompile(`\*\*(.+?)\*\*`)
-	reLink    = regexp.MustCompile(`\[([^\]]*)\]\(([^)]+)\)`)
-	reHeading = regexp.MustCompile(`^(#{1,3})\s+(.*)$`)
-	reBullet  = regexp.MustCompile(`^-\s+(.*)$`)
+	reBold       = regexp.MustCompile(`\*\*(.+?)\*\*`)
+	reLink       = regexp.MustCompile(`\[([^\]]*)\]\(([^)]+)\)`)
+	reHeading    = regexp.MustCompile(`^(#{1,3})\s+(.*)$`)
+	reBullet     = regexp.MustCompile(`^-\s+(.*)$`)
+	reSocialPage = regexp.MustCompile(`^Social-([A-Za-z]+)$`)
 )
 
 func inline(s string) string {
@@ -113,7 +114,22 @@ func inline(s string) string {
 	// html.EscapeString turns "&" in an already-escaped &amp; from a
 	// literal & in source text; safe since our source markdown never
 	// contains raw HTML entities itself.
-	s = reLink.ReplaceAllString(s, `<a href="$2">$1</a>`)
+	// Home.md (written by cmd/wikihome) links to each platform page as
+	// its plain title, e.g. "Social-Bluesky" — correct for Forgejo's own
+	// wiki, which resolves titles itself. This mirror instead writes
+	// each platform's page as social-<platform>.html (see the fileName
+	// computation below) and never goes through Forgejo's own
+	// further-mangled slug ("Social-Bluesky.-", see
+	// internal/wiki/client.go's slugFor) — so a same-wiki link needs
+	// rewriting here or it 404s on a page this mirror never made.
+	s = reLink.ReplaceAllStringFunc(s, func(m string) string {
+		parts := reLink.FindStringSubmatch(m)
+		text, href := parts[1], parts[2]
+		if plat := reSocialPage.FindStringSubmatch(href); plat != nil {
+			href = "social-" + strings.ToLower(plat[1]) + ".html"
+		}
+		return fmt.Sprintf(`<a href="%s">%s</a>`, href, text)
+	})
 	s = reBold.ReplaceAllString(s, `<strong>$1</strong>`)
 	return s
 }
