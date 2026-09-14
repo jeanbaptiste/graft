@@ -133,19 +133,13 @@ func pollSeriesReplies(series, handle, appPassword, pdsHost string, live *liveSt
 			continue
 		}
 
-		body := state.MarkMirrored(fmt.Sprintf("**via Bluesky, @%s:**\n\n%s", n.Author.Handle, strings.TrimSpace(n.Record.Text)))
-		if err := rs.CommentOnItem(e.Kind, e.ForgejoID, e.RadicleID, body); err != nil {
-			log.Error("bluesky reply: post comment", "series", series, "repo_pair", e.RepoPair, "err", err)
-			continue
+		itemTitle := e.Summary
+		if itemTitle == "" {
+			itemTitle = e.RepoPair
 		}
-		if _, err := st.LogActivity(state.Activity{
-			RepoPair: e.RepoPair, Series: e.Series, SeriesURL: e.SeriesURL,
-			Kind: "comment", Direction: e.Direction, Origin: "atproto",
-			Summary:   truncateATProtoSummary(n.Record.Text),
-			URL:       e.URL,
-			ForgejoID: e.ForgejoID, RadicleID: e.RadicleID,
-		}); err != nil {
-			log.Error("bluesky reply: log activity", "series", series, "err", err)
+		if err := rs.LogSocialReply("Bluesky", "@"+n.Author.Handle, strings.TrimSpace(n.Record.Text), e.Kind, itemTitle, e.URL, time.Now()); err != nil {
+			log.Error("bluesky reply: log social reply", "series", series, "repo_pair", e.RepoPair, "err", err)
+			continue
 		}
 	}
 

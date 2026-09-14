@@ -3,7 +3,6 @@ package activitypub
 import (
 	"crypto/rsa"
 	"encoding/json"
-	"fmt"
 	"html/template"
 	"io"
 	"log/slog"
@@ -81,16 +80,16 @@ type Handler struct {
 	store *state.Store
 	host  string
 	log   *slog.Logger
-	// repoURL, known, postComment, and radicleDID are supplied by the
+	// repoURL, known, postSocial, and radicleDID are supplied by the
 	// caller (cmd/sync/main.go), which already knows every series'
 	// topology and holds the actual sync.RepoSyncer instances — avoids
 	// this package needing to know about config.Config or sync.RepoSyncer
 	// at all.
-	repoURL     func(series string) string
-	known       func(series string) bool
-	postComment func(repoPair, kind string, forgejoID int64, radicleID, body string) error
-	radicleDID  func(series string) string
-	client      *http.Client
+	repoURL    func(series string) string
+	known      func(series string) bool
+	postSocial func(repoPair, platform, author, body, itemKind, itemTitle, itemURL string) error
+	radicleDID func(series string) string
+	client     *http.Client
 }
 
 func NewHandler(
@@ -99,18 +98,18 @@ func NewHandler(
 	log *slog.Logger,
 	repoURL func(series string) string,
 	known func(series string) bool,
-	postComment func(repoPair, kind string, forgejoID int64, radicleID, body string) error,
+	postSocial func(repoPair, platform, author, body, itemKind, itemTitle, itemURL string) error,
 	radicleDID func(series string) string,
 ) *Handler {
 	return &Handler{
-		store:       store,
-		host:        host,
-		log:         log,
-		repoURL:     repoURL,
-		known:       known,
-		postComment: postComment,
-		radicleDID:  radicleDID,
-		client:      NewSafeClient(15 * time.Second),
+		store:      store,
+		host:       host,
+		log:        log,
+		repoURL:    repoURL,
+		known:      known,
+		postSocial: postSocial,
+		radicleDID: radicleDID,
+		client:     NewSafeClient(15 * time.Second),
 	}
 }
 
@@ -396,6 +395,28 @@ func (h *Handler) inbox(w http.ResponseWriter, r *http.Request, series string) {
 	w.WriteHeader(http.StatusAccepted)
 }
 
+// detectPlatform parses a bridge's "**via X, author:**\n\nbody" prefix
+// (see graft-discourse/graft-zulip/graft-tangled's bridge.go — each tags
+// its own delivered content this way) out of an inbound reply, returning
+// the originating platform, its author, and the body with that prefix
+// stripped. No match (nothing bridged it — a native Mastodon reply)
+// returns platform "Mastodon" with content and fallbackAuthor untouched.
+func detectPlatform(content, fallbackAuthor string) (platform, author, body string) {
+	if strings.HasPrefix(content, "**via ") {
+		rest := strings.TrimPrefix(content, "**via ")
+		if end := strings.Index(rest, ":**"); end >= 0 {
+			head := rest[:end]
+			if comma := strings.Index(head, ","); comma >= 0 {
+				platform = strings.TrimSpace(head[:comma])
+				author = strings.TrimSpace(head[comma+1:])
+				body = strings.TrimSpace(strings.TrimPrefix(rest[end+len(":**"):], "\n\n"))
+				return platform, author, body
+			}
+		}
+	}
+	return "Mastodon", fallbackAuthor, content
+}
+
 // inboxNote is the subset of an inbound reply's Note object this handler
 // reads.
 type inboxNote struct {
@@ -426,10 +447,22 @@ func (h *Handler) handleReply(series string, remoteActor *Actor, note inboxNote)
 	if who == "" {
 		who = remoteActor.Name
 	}
-	body := state.MarkMirrored(fmt.Sprintf("**via Fediverse, @%s:**\n\n%s", who, stripHTML(note.Content)))
+	content := stripHTML(note.Content)
 
-	if err := h.postComment(e.RepoPair, e.Kind, e.ForgejoID, e.RadicleID, body); err != nil {
-		h.log.Error("ap reply: post comment", "series", series, "repo_pair", e.RepoPair, "err", err)
+	// Bridges (graft-discourse, graft-zulip, graft-tangled) deliver here
+	// with their platform already tagged at the start of the note's
+	// content ("**via Discourse, @user:**\n\n...", etc. — see each
+	// bridge's bridge.go/forwardXToGraft). A native Mastodon/fediverse
+	// reply carries no such tag, since nothing bridged it. Route by that
+	// tag so each platform's replies land on their own wiki page.
+	platform, author, body := detectPlatform(content, who)
+
+	itemTitle := e.Summary
+	if itemTitle == "" {
+		itemTitle = e.RepoPair
+	}
+	if err := h.postSocial(e.RepoPair, platform, author, body, e.Kind, itemTitle, e.URL); err != nil {
+		h.log.Error("ap reply: log social reply", "series", series, "platform", platform, "repo_pair", e.RepoPair, "err", err)
 		return
 	}
 	if _, err := h.store.LogActivity(state.Activity{

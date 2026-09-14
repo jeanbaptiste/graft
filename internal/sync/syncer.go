@@ -7,11 +7,13 @@ import (
 	"net/url"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"graft/internal/config"
 	"graft/internal/forgejo"
 	"graft/internal/radicle"
 	"graft/internal/state"
+	"graft/internal/wiki"
 )
 
 // RepoSyncer runs one repo pair's enabled sync scopes for one pass.
@@ -23,6 +25,7 @@ type RepoSyncer struct {
 	gitFF   *GitSyncerFF // set instead of git when pair.ForgejoMirror is used
 	issues  *IssueSyncer
 	patches *PatchSyncer
+	wiki    *wiki.Client // this pair's Forgejo wiki — social replies land here, not as issue comments
 }
 
 // New builds a RepoSyncer for one configured pair. workDir is where this
@@ -39,7 +42,7 @@ func New(pair config.RepoPair, st *state.Store, workDir string) (*RepoSyncer, er
 		return nil, fmt.Errorf("resolve forgejo repository: %w", err)
 	}
 
-	rs := &RepoSyncer{pair: pair, forgejo: fc}
+	rs := &RepoSyncer{pair: pair, forgejo: fc, wiki: wiki.New(pair.Forgejo.BaseURL, pair.Forgejo.Owner, pair.Forgejo.Repo, token)}
 
 	forgejoWebURL := strings.TrimRight(pair.Forgejo.BaseURL, "/") + "/" + pair.Forgejo.Owner + "/" + pair.Forgejo.Repo
 
@@ -239,6 +242,31 @@ func (rs *RepoSyncer) CommentOnItem(kind string, forgejoID int64, radicleID, bod
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// LogSocialReply appends one social-platform reply to this pair's own
+// Forgejo wiki, on a page dedicated to platform ("Social-Discourse",
+// "Social-Bluesky", "Social-Mastodon", "Social-Zulip", "Social-Tangled" —
+// created on first use). This is where social discussion lands instead of
+// as a real Forgejo/Radicle issue comment — see internal/wiki's package
+// doc for why. itemTitle/itemURL/itemKind describe the mirrored
+// issue/patch the reply is about, for context in the timeline entry.
+func (rs *RepoSyncer) LogSocialReply(platform, author, body, itemKind, itemTitle, itemURL string, occurredAt time.Time) error {
+	page := "Social-" + platform
+	header := fmt.Sprintf(
+		"# Social — %s\n\nDiscussion about this repository mirrored from **%s**, newest first. "+
+			"Maintained automatically by [graft](https://github.com/jeanbaptiste/graft) — edits here are not preserved.",
+		platform, platform)
+
+	quoted := "> " + strings.ReplaceAll(strings.TrimSpace(body), "\n", "\n> ")
+	link := itemTitle
+	if itemURL != "" {
+		link = fmt.Sprintf("[%s](%s)", itemTitle, itemURL)
+	}
+	entry := fmt.Sprintf("### %s\n\n%s &middot; %s\n\n**%s** wrote:\n\n%s\n",
+		occurredAt.UTC().Format("2006-01-02 15:04 UTC"), link, itemKind, author, quoted)
+
+	return rs.wiki.AppendEntry(page, header, entry)
 }
 
 // RadicleDID returns the local Radicle node identity this pair pushes as,

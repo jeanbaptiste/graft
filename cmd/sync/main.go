@@ -112,12 +112,12 @@ func main() {
 				_, ok := live.topologySnapshot()[series]
 				return ok
 			},
-			func(repoPair, kind string, forgejoID int64, radicleID, body string) error {
+			func(repoPair, platform, author, body, itemKind, itemTitle, itemURL string) error {
 				rs, ok := live.syncerForPair(repoPair)
 				if !ok {
 					return fmt.Errorf("unknown repo pair %q", repoPair)
 				}
-				return rs.CommentOnItem(kind, forgejoID, radicleID, body)
+				return rs.LogSocialReply(platform, author, body, itemKind, itemTitle, itemURL, time.Now())
 			},
 			func(series string) string {
 				rs, ok := live.syncerForSeries(series)
