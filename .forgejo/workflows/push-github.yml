@@ -15,6 +15,9 @@ jobs:
           cd /tmp/graft-mirror
           git config user.email "graft@f1.cyberwild.org"
           git config user.name "graft-ci"
+          # The anonymous clone above has no push credentials — needed now
+          # that this job pushes back to f1, not just to GitHub.
+          git remote set-url origin "https://oauth2:${{ secrets.F1_ISSUE_TOKEN }}@f1.cyberwild.org/forgeadmin/graft.git"
 
           # Someone may have pushed straight to GitHub since our last sync —
           # pull those commits in first so a plain push never just refuses
