@@ -387,6 +387,8 @@ func (h *Handler) inbox(w http.ResponseWriter, r *http.Request, series string) {
 		var note inboxNote
 		if err := json.Unmarshal(act.Object, &note); err == nil && note.Type == "Note" && note.InReplyTo != "" {
 			h.handleReply(series, remoteActor, note)
+		} else {
+			h.log.Warn("ap inbox: Create with no usable reply note", "series", series, "unmarshalErr", err, "noteType", note.Type, "inReplyTo", note.InReplyTo)
 		}
 	default:
 		// Anything else (Like, Announce, ...) is accepted and ignored.
@@ -432,6 +434,7 @@ type inboxNote struct {
 func (h *Handler) handleReply(series string, remoteActor *Actor, note inboxNote) {
 	noteSeries, entryID, ok := ParseNoteURI(h.host, note.InReplyTo)
 	if !ok || noteSeries != series {
+		h.log.Warn("ap reply: note URI did not parse or series mismatch", "series", series, "inReplyTo", note.InReplyTo, "parsedSeries", noteSeries, "ok", ok)
 		return
 	}
 	e, err := h.store.ActivityByID(entryID)
@@ -440,6 +443,11 @@ func (h *Handler) handleReply(series string, remoteActor *Actor, note inboxNote)
 		return
 	}
 	if e == nil || (e.Kind != "issue" && e.Kind != "patch") {
+		kind := ""
+		if e != nil {
+			kind = e.Kind
+		}
+		h.log.Warn("ap reply: nothing to comment on", "series", series, "id", entryID, "found", e != nil, "kind", kind)
 		return // nothing to comment on — a reply to a git commit note, or the entry vanished
 	}
 
