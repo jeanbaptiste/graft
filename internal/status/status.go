@@ -1131,7 +1131,7 @@ var socialTmpl = template.Must(template.New("social").Parse(`<!doctype html>
   <div class="card">
   {{range .Series}}
     <div class="series-block">
-      <div class="handle">@{{.Handle}}</div>
+      <div class="handle"><a href="{{.ActorURL}}" target="_blank" rel="noopener">@{{.Handle}}</a></div>
       <h2>ActivityPub &middot; {{.FollowerCount}} follower{{if ne .FollowerCount 1}}s{{end}}</h2>
       <div class="endpoints">
         <a href="{{.WebfingerURL}}" target="_blank" rel="noopener">WebFinger</a>
