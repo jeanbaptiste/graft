@@ -274,8 +274,7 @@ func (rs *RepoSyncer) LogSocialReply(platform, author, body, itemKind, itemTitle
 	}
 	page := "Social-" + platform
 	header := fmt.Sprintf(
-		"# Social — %s\n\nDiscussion about this repository mirrored from **%s**, newest first. "+
-			"Maintained automatically by [graft](https://github.com/jeanbaptiste/graft) — edits here are not preserved.",
+		"# Social — %s\n\nDiscussion about this repository mirrored from **%s**, newest first.",
 		platform, platform)
 
 	quoted := "> " + strings.ReplaceAll(strings.TrimSpace(body), "\n", "\n> ")
@@ -375,7 +374,7 @@ func (rs *RepoSyncer) postToFallbackIssue(platform, tagged string) error {
 	if !ok {
 		issue, err := rs.forgejo.CreateIssue(
 			"Social — "+platform,
-			fmt.Sprintf("Replies about this repository from **%s**, collected here because the wiki isn't writable with this pair's current token scope.\n\nMaintained automatically by [graft](https://github.com/jeanbaptiste/graft) — edits here are not preserved.", platform),
+			fmt.Sprintf("Replies about this repository from **%s**, collected here because the wiki isn't writable with this pair's current token scope.", platform),
 		)
 		if err != nil {
 			return fmt.Errorf("create fallback issue: %w", err)
