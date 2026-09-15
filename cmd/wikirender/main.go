@@ -188,16 +188,17 @@ func inline(s string) string {
 		}
 		return fmt.Sprintf(`<a href="%s">%s</a>`, href, text)
 	})
-	if profileLink != nil {
-		s = reAuthor.ReplaceAllStringFunc(s, func(m string) string {
-			name := reAuthor.FindStringSubmatch(m)[1]
-			href := profileLink(html.UnescapeString(name))
-			if href == "" {
-				return "**@" + name + "**"
-			}
-			return fmt.Sprintf(`<strong><a href="%s">@%s</a></strong>`, html.EscapeString(href), name)
-		})
-	}
+	s = reAuthor.ReplaceAllStringFunc(s, func(m string) string {
+		name := reAuthor.FindStringSubmatch(m)[1]
+		href := ""
+		if profileLink != nil {
+			href = profileLink(html.UnescapeString(name))
+		}
+		if href == "" {
+			return "**@" + name + "**"
+		}
+		return fmt.Sprintf(`<strong><a href="%s">@%s</a></strong>`, html.EscapeString(href), name)
+	})
 	s = reBold.ReplaceAllString(s, `<strong>$1</strong>`)
 	// Single-asterisk emphasis — internal/wiki's page footer
 	// ("*Last updated: ...*") — only after bold has consumed every "**".
