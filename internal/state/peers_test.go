@@ -73,3 +73,24 @@ func TestPeersFileRoundTripRestoresLostPeers(t *testing.T) {
 		t.Fatalf("missing peers file: %v %v", missing, err)
 	}
 }
+
+func TestCommitDiscussionIsReusedPerCommit(t *testing.T) {
+	st, err := Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	const url = "https://f1.example/o/r/commit/abc"
+	if _, ok, err := st.CommitDiscussion("pair", url); err != nil || ok {
+		t.Fatalf("fresh store: ok=%v err=%v", ok, err)
+	}
+	if err := st.SaveCommitDiscussion("pair", url, 42); err != nil {
+		t.Fatal(err)
+	}
+	if id, ok, err := st.CommitDiscussion("pair", url); err != nil || !ok || id != 42 {
+		t.Fatalf("after save: id=%d ok=%v err=%v", id, ok, err)
+	}
+	if _, ok, _ := st.CommitDiscussion("other-pair", url); ok {
+		t.Fatal("discussion leaked across pairs")
+	}
+}

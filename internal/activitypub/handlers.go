@@ -457,13 +457,13 @@ func (h *Handler) handleReply(series string, remoteActor *Actor, note inboxNote)
 		h.log.Error("ap reply: load activity", "series", series, "id", entryID, "err", err)
 		return
 	}
-	if e == nil || (e.Kind != "issue" && e.Kind != "patch") {
+	if e == nil || (e.Kind != "issue" && e.Kind != "patch" && e.Kind != "git") {
 		kind := ""
 		if e != nil {
 			kind = e.Kind
 		}
 		h.log.Warn("ap reply: nothing to comment on", "series", series, "id", entryID, "found", e != nil, "kind", kind)
-		return // nothing to comment on — a reply to a git commit note, or the entry vanished
+		return // nothing to comment on — a reply to some other kind of note, or the entry vanished
 	}
 
 	who := remoteActor.PreferredUsername

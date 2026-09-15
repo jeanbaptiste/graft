@@ -125,7 +125,9 @@ func pollSeriesReplies(series, handle, appPassword, pdsHost string, live *liveSt
 			log.Error("bluesky reply: load activity", "series", series, "id", activityID, "err", err)
 			continue
 		}
-		if e == nil || (e.Kind != "issue" && e.Kind != "patch") {
+		// Replies to a commit's post open (or continue) that commit's
+		// discussion issue — see RepoSyncer.LogSocialReply.
+		if e == nil || (e.Kind != "issue" && e.Kind != "patch" && e.Kind != "git") {
 			continue
 		}
 		rs, ok := live.syncerForPair(e.RepoPair)

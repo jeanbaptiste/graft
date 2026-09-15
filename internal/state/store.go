@@ -210,6 +210,17 @@ CREATE TABLE IF NOT EXISTS pending_radicle_peer (
 -- available (see RepoSyncer.LogSocialReply's wiki.ErrForbidden path) —
 -- one per (repo_pair, platform), reused for every subsequent reply on
 -- that pair+platform instead of creating a new issue each time.
+-- One Forgejo issue per commit that received a social reply: the first
+-- reply to a commit's post opens it, later replies to the same commit land
+-- as comments on it. Keyed by the commit's URL as logged in activity_log.
+CREATE TABLE IF NOT EXISTS commit_discussion (
+	repo_pair  TEXT NOT NULL,
+	commit_url TEXT NOT NULL,
+	forgejo_id INTEGER NOT NULL,
+	created_at TEXT NOT NULL,
+	PRIMARY KEY (repo_pair, commit_url)
+);
+
 CREATE TABLE IF NOT EXISTS social_fallback_issue (
 	repo_pair  TEXT NOT NULL,
 	platform   TEXT NOT NULL,
@@ -853,6 +864,25 @@ func (s *Store) SocialFallbackIssue(repoPair, platform string) (forgejoID int64,
 func (s *Store) SaveSocialFallbackIssue(repoPair, platform string, forgejoID int64, radicleID string) error {
 	_, err := s.db.Exec(`INSERT OR REPLACE INTO social_fallback_issue (repo_pair, platform, forgejo_id, radicle_id, created_at) VALUES (?, ?, ?, ?, ?)`,
 		repoPair, platform, forgejoID, radicleID, time.Now().UTC().Format(time.RFC3339))
+	return err
+}
+
+// CommitDiscussion returns the Forgejo issue opened for replies to the
+// commit at commitURL on repoPair, if any.
+func (s *Store) CommitDiscussion(repoPair, commitURL string) (forgejoID int64, ok bool, err error) {
+	row := s.db.QueryRow(`SELECT forgejo_id FROM commit_discussion WHERE repo_pair = ? AND commit_url = ?`, repoPair, commitURL)
+	err = row.Scan(&forgejoID)
+	if err == sql.ErrNoRows {
+		return 0, false, nil
+	}
+	return forgejoID, err == nil, err
+}
+
+// SaveCommitDiscussion records the issue just opened for a commit's
+// replies, so later replies to that commit reuse it.
+func (s *Store) SaveCommitDiscussion(repoPair, commitURL string, forgejoID int64) error {
+	_, err := s.db.Exec(`INSERT OR REPLACE INTO commit_discussion (repo_pair, commit_url, forgejo_id, created_at) VALUES (?, ?, ?, ?)`,
+		repoPair, commitURL, forgejoID, time.Now().UTC().Format(time.RFC3339))
 	return err
 }
 

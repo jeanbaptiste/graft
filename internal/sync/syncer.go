@@ -19,15 +19,15 @@ import (
 
 // RepoSyncer runs one repo pair's enabled sync scopes for one pass.
 type RepoSyncer struct {
-	pair    config.RepoPair
-	forgejo *forgejo.Client
-	radicle *radicle.Client
+	pair     config.RepoPair
+	forgejo  *forgejo.Client
+	radicle  *radicle.Client
 	git      *GitSyncer
 	gitFF    *GitSyncerFF // set instead of git when pair.ForgejoMirror is used
 	issues   *IssueSyncer
 	issuesFF *IssueSyncerFF // set instead of issues when pair.ForgejoMirror is used
 	patches  *PatchSyncer
-	wiki    *wiki.Client // this pair's Forgejo wiki — social replies land here when the token allows it, else fall back to an issue comment (see LogSocialReply)
+	wiki     *wiki.Client // this pair's Forgejo wiki — social replies land here when the token allows it, else fall back to an issue comment (see LogSocialReply)
 
 	state  *state.Store
 	fanout []fanoutTarget // see config.RepoPair.SocialFanout
@@ -269,6 +269,9 @@ func (rs *RepoSyncer) Series() string {
 // stay where they were written.
 func (rs *RepoSyncer) LogSocialReply(platform, author, body, itemKind, itemTitle, itemURL, sourceURL string, forgejoID int64, radicleID string, occurredAt time.Time) error {
 	slog.Info("LogSocialReply: entered", "pair", rs.pair.Name, "platform", platform, "fanoutCount", len(rs.fanout))
+	if itemKind == "git" {
+		return rs.logCommitReply(platform, author, body, itemTitle, itemURL, sourceURL)
+	}
 	page := "Social-" + platform
 	header := fmt.Sprintf(
 		"# Social — %s\n\nDiscussion about this repository mirrored from **%s**, newest first. "+
@@ -308,6 +311,52 @@ func (rs *RepoSyncer) LogSocialReply(platform, author, body, itemKind, itemTitle
 	rs.noteWikiMode(false)
 	tagged := fmt.Sprintf("via %s, %s:\n\n%s", platform, author, body)
 	return rs.postToFallbackIssue(platform, tagged)
+}
+
+// logCommitReply turns a social reply to a commit's post into a real
+// discussion thread: the commit's first reply opens a dedicated Forgejo
+// issue on this pair, and every later reply to the same commit becomes a
+// comment on it. Unlike a reply to an issue or patch — which already has
+// its own thread, so only the wiki timeline records it — a commit has
+// nowhere else for a conversation to live. The issue and its comments are
+// ordinary Forgejo content, so the regular issue and comment sync carries
+// them on to Radicle and every other forge in the federation.
+func (rs *RepoSyncer) logCommitReply(platform, author, body, commitSummary, commitURL, sourceURL string) error {
+	if commitURL == "" {
+		return fmt.Errorf("commit reply on %s: activity has no commit URL", rs.pair.Name)
+	}
+	issueID, ok, err := rs.state.CommitDiscussion(rs.pair.Name, commitURL)
+	if err != nil {
+		return fmt.Errorf("look up commit discussion: %w", err)
+	}
+	if !ok {
+		title := "Discussion du commit " + truncateTitle(commitSummary, 80)
+		issueBody := fmt.Sprintf("Fil de discussion ouvert automatiquement par [graft](https://github.com/jeanbaptiste/graft) "+
+			"pour les réponses publiées sur les réseaux sociaux à propos du commit [%s](%s).", commitSummary, commitURL)
+		issue, err := rs.forgejo.CreateIssue(title, issueBody)
+		if err != nil {
+			return fmt.Errorf("open commit discussion issue: %w", err)
+		}
+		if err := rs.state.SaveCommitDiscussion(rs.pair.Name, commitURL, issue.Index); err != nil {
+			return fmt.Errorf("save commit discussion: %w", err)
+		}
+		issueID = issue.Index
+		slog.Info("opened commit discussion", "pair", rs.pair.Name, "commit", commitURL, "issue", issueID)
+	}
+	comment := fmt.Sprintf("**via %s, %s:**\n\n%s", platform, author, strings.TrimSpace(body))
+	if sourceURL != "" {
+		comment += fmt.Sprintf("\n\n[→ %s conversation](%s)", platform, sourceURL)
+	}
+	return rs.forgejo.CreateIssueComment(issueID, comment)
+}
+
+func truncateTitle(s string, max int) string {
+	s = strings.TrimSpace(strings.SplitN(s, "\n", 2)[0])
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	return string(r[:max-1]) + "…"
 }
 
 // postToFallbackIssue is LogSocialReply's wiki.ErrForbidden fallback: a
