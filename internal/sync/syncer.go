@@ -19,15 +19,15 @@ import (
 
 // RepoSyncer runs one repo pair's enabled sync scopes for one pass.
 type RepoSyncer struct {
-	pair    config.RepoPair
-	forgejo *forgejo.Client
-	radicle *radicle.Client
+	pair     config.RepoPair
+	forgejo  *forgejo.Client
+	radicle  *radicle.Client
 	git      *GitSyncer
 	gitFF    *GitSyncerFF // set instead of git when pair.ForgejoMirror is used
 	issues   *IssueSyncer
 	issuesFF *IssueSyncerFF // set instead of issues when pair.ForgejoMirror is used
 	patches  *PatchSyncer
-	wiki    *wiki.Client // this pair's Forgejo wiki — social replies land here when the token allows it, else fall back to an issue comment (see LogSocialReply)
+	wiki     *wiki.Client // this pair's Forgejo wiki — social replies land here when the token allows it, else fall back to an issue comment (see LogSocialReply)
 
 	state  *state.Store
 	fanout []fanoutTarget // see config.RepoPair.SocialFanout
@@ -269,12 +269,16 @@ func (rs *RepoSyncer) Series() string {
 // stay where they were written.
 func (rs *RepoSyncer) LogSocialReply(platform, author, body, itemKind, itemTitle, itemURL, sourceURL string, forgejoID int64, radicleID string, occurredAt time.Time) error {
 	slog.Info("LogSocialReply: entered", "pair", rs.pair.Name, "platform", platform, "fanoutCount", len(rs.fanout))
+	if itemKind == "git" {
+		return rs.logCommitReply(platform, author, body, itemTitle, itemURL, sourceURL)
+	}
 	page := "Social-" + platform
 	header := fmt.Sprintf(
-		"# Social — %s\n\nDiscussion about this repository mirrored from **%s**, newest first. "+
-			"Maintained automatically by [graft](https://github.com/jeanbaptiste/graft) — edits here are not preserved.",
+		"# Social — %s\n\nDiscussion about this repository mirrored from **%s**, newest first.",
 		platform, platform)
 
+	// Bridges already hand over "@name"; the entry adds its own "@".
+	author = strings.TrimLeft(author, "@")
 	quoted := "> " + strings.ReplaceAll(strings.TrimSpace(body), "\n", "\n> ")
 	link := itemTitle
 	if itemURL != "" {
@@ -310,6 +314,91 @@ func (rs *RepoSyncer) LogSocialReply(platform, author, body, itemKind, itemTitle
 	return rs.postToFallbackIssue(platform, tagged)
 }
 
+// CommitThreadElsewhereError is returned by LogSocialReply for a reply to
+// a commit whose discussion issue lives on another pair of the same series
+// (each pair logs the same commit as its own activity, so a reply can point
+// at any of them). The caller retries on that pair's RepoSyncer.
+type CommitThreadElsewhereError struct {
+	RepoPair string
+}
+
+func (e *CommitThreadElsewhereError) Error() string {
+	return "commit discussion is held by pair " + e.RepoPair
+}
+
+// logCommitReply turns a social reply to a commit's post into a real
+// discussion thread: the commit's first reply opens a dedicated Forgejo
+// issue, and every later reply to the same commit — from any pair of the
+// series — becomes a comment on it. Unlike a reply to an issue or patch,
+// which already has its own thread (only the wiki timeline records it), a
+// commit has nowhere else for a conversation to live. The issue and its
+// comments are ordinary Forgejo content, so the regular issue and comment
+// sync carries them on to Radicle and every other forge in the federation.
+func (rs *RepoSyncer) logCommitReply(platform, author, body, commitSummary, commitURL, sourceURL string) error {
+	sha := commitSHA(commitSummary, commitURL)
+	if sha == "" {
+		return fmt.Errorf("commit reply on %s: cannot tell which commit %q is", rs.pair.Name, commitSummary)
+	}
+	series := rs.Series()
+	holder, issueID, ok, err := rs.state.CommitThread(series, sha)
+	if err != nil {
+		return fmt.Errorf("look up commit discussion: %w", err)
+	}
+	if ok && holder != rs.pair.Name {
+		return &CommitThreadElsewhereError{RepoPair: holder}
+	}
+	if !ok {
+		title := "Discussion du commit " + truncateTitle(commitSummary, 80)
+		issueBody := fmt.Sprintf("Fil de discussion ouvert automatiquement par [graft](https://github.com/jeanbaptiste/graft) "+
+			"pour les réponses publiées sur les réseaux sociaux à propos du commit [%s](%s).", commitSummary, commitURL)
+		issue, err := rs.forgejo.CreateIssue(title, issueBody)
+		if err != nil {
+			return fmt.Errorf("open commit discussion issue: %w", err)
+		}
+		if err := rs.state.SaveCommitThread(series, sha, rs.pair.Name, issue.Index); err != nil {
+			return fmt.Errorf("save commit discussion: %w", err)
+		}
+		issueID = issue.Index
+		slog.Info("opened commit discussion", "pair", rs.pair.Name, "series", series, "sha", sha, "issue", issueID)
+	}
+	comment := fmt.Sprintf("**via %s, %s:**\n\n%s", platform, author, strings.TrimSpace(body))
+	if sourceURL != "" {
+		comment += fmt.Sprintf("\n\n[→ %s conversation](%s)", platform, sourceURL)
+	}
+	return rs.forgejo.CreateIssueComment(issueID, comment)
+}
+
+// commitSHA is the 7-character short SHA identifying a commit across
+// pairs: the "%h %s" summary graft logs starts with it, and the commit
+// URL (Forgejo .../commit/<sha>, Radicle .../commits/<sha>) ends with the
+// full SHA.
+func commitSHA(summary, url string) string {
+	isHex := func(s string) bool {
+		for _, r := range s {
+			if !strings.ContainsRune("0123456789abcdef", r) {
+				return false
+			}
+		}
+		return s != ""
+	}
+	if first, _, _ := strings.Cut(strings.TrimSpace(summary), " "); len(first) >= 7 && isHex(first) {
+		return first[:7]
+	}
+	if i := strings.LastIndex(url, "/"); i >= 0 && len(url)-i-1 >= 7 && isHex(url[i+1:]) {
+		return url[i+1 : i+8]
+	}
+	return ""
+}
+
+func truncateTitle(s string, max int) string {
+	s = strings.TrimSpace(strings.SplitN(s, "\n", 2)[0])
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	return string(r[:max-1]) + "…"
+}
+
 // postToFallbackIssue is LogSocialReply's wiki.ErrForbidden fallback: a
 // dedicated issue per (pair, platform) — created once, reused for every
 // later reply on that pair+platform — rather than a comment on whichever
@@ -326,7 +415,7 @@ func (rs *RepoSyncer) postToFallbackIssue(platform, tagged string) error {
 	if !ok {
 		issue, err := rs.forgejo.CreateIssue(
 			"Social — "+platform,
-			fmt.Sprintf("Replies about this repository from **%s**, collected here because the wiki isn't writable with this pair's current token scope.\n\nMaintained automatically by [graft](https://github.com/jeanbaptiste/graft) — edits here are not preserved.", platform),
+			fmt.Sprintf("Replies about this repository from **%s**, collected here because the wiki isn't writable with this pair's current token scope.", platform),
 		)
 		if err != nil {
 			return fmt.Errorf("create fallback issue: %w", err)

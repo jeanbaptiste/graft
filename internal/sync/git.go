@@ -184,6 +184,20 @@ func (g *GitSyncer) Sync() error {
 		return fmt.Errorf("read cursor: %w", err)
 	}
 
+	// headOf only reads refs (ls-remote); the ancestry checks below run
+	// git merge-base in the local clone, which fails — and so reads as
+	// "not an ancestor" — for any commit not fetched yet. Without this, a
+	// merge commit that reconciles both sides is still reported as a
+	// divergence forever, since nothing else fetches it before the check.
+	if forgejoHead != radHead {
+		if _, err := g.run("fetch", "-q", "forgejo", g.ForgejoBranch); err != nil && forgejoHead != "" {
+			return fmt.Errorf("fetch forgejo: %w", err)
+		}
+		if _, err := g.run("fetch", "-q", "rad", g.ForgejoBranch); err != nil && radHead != "" {
+			return fmt.Errorf("fetch rad: %w", err)
+		}
+	}
+
 	switch {
 	case forgejoHead == radHead:
 		// Already in sync; still record the cursor in case this is the

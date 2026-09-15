@@ -264,13 +264,41 @@ func pageFooter() string {
 	return "\n\n---\n\n*Last updated: " + time.Now().UTC().Format("2006-01-02 15:04 UTC") + "*\n"
 }
 
+// footerPrefixes are every footer format pageFooter has ever written —
+// the current one first. Pages written by an older build still carry
+// theirs, so all of them have to be recognised or footers pile up at the
+// bottom of the page, one per entry appended.
+var footerPrefixes = []string{
+	"\n\n---\n\n*Last updated: ",
+	"\n\n<!-- graft-sync @",
+	"\n\n---\n\n_Page generée par",
+	// Hand-written during the 2026-09-15 incident, never by graft itself
+	// (and labelled UTC while showing Paris time) — still on live pages.
+	"\n\n---\n\n_Page mise à jour par graft",
+}
+
+// removeFooter strips every trailing footer, of any known format, from
+// content. Only footers at the very end are removed: a match followed by
+// anything other than the rest of its own line (plus more footers) is
+// real page content and left alone.
 func removeFooter(content string) string {
-	// Remove the footer comment if present (<!-- graft-sync @ ... -->)
-	idx := strings.LastIndex(content, "\n\n<!-- graft-sync @")
-	if idx < 0 {
-		return content
+	for {
+		trimmed := strings.TrimRight(content, "\n")
+		cut := -1
+		for _, p := range footerPrefixes {
+			idx := strings.LastIndex(trimmed, p)
+			if idx < 0 {
+				continue
+			}
+			if !strings.Contains(trimmed[idx+len(p):], "\n") && idx > cut {
+				cut = idx
+			}
+		}
+		if cut < 0 {
+			return trimmed
+		}
+		content = trimmed[:cut]
 	}
-	return strings.TrimRight(content[:idx], "\n")
 }
 
 func truncate(b []byte, n int) string {

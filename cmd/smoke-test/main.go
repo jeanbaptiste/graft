@@ -25,22 +25,22 @@ type Note struct {
 }
 
 type Create struct {
-	Context   string `json:"@context"`
-	ID        string `json:"id"`
-	Type      string `json:"type"`
-	Actor     string `json:"actor"`
-	Published string `json:"published"`
+	Context   string   `json:"@context"`
+	ID        string   `json:"id"`
+	Type      string   `json:"type"`
+	Actor     string   `json:"actor"`
+	Published string   `json:"published"`
 	To        []string `json:"to"`
-	Object    Note   `json:"object"`
+	Object    Note     `json:"object"`
 }
 
 var (
-	graftHost  = flag.String("graft", "https://f1.cyberwild.org", "Graft base URL")
-	series     = flag.String("series", "constitution", "Series name")
-	issueURI   = flag.String("issue", "", "Issue note URI to reply to")
-	actorURL   = flag.String("actor", "https://bridge.test/actor", "Bridge actor URL")
-	numMsgs    = flag.Int("num", 20, "Number of messages to create")
-	fromURL    = flag.String("from", "", "Platform source URL (e.g. discourse topic URL)")
+	graftHost = flag.String("graft", "https://f1.cyberwild.org", "Graft base URL")
+	series    = flag.String("series", "constitution", "Series name")
+	issueURI  = flag.String("issue", "", "Issue note URI to reply to")
+	actorURL  = flag.String("actor", "https://bridge.test/actor", "Bridge actor URL")
+	numMsgs   = flag.Int("num", 20, "Number of messages to create")
+	fromURL   = flag.String("from", "", "Platform source URL (e.g. discourse topic URL)")
 )
 
 // Message templates for each repository

@@ -3,6 +3,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"time"
 
@@ -12,8 +13,18 @@ import (
 // Config is the top-level configuration for the sync daemon.
 type Config struct {
 	SyncInterval time.Duration `yaml:"sync_interval"`
-	StateDB      string        `yaml:"state_db"`
-	Repos        []RepoPair    `yaml:"repos"`
+	// HostSyncIntervals slows down every pair whose Forgejo (or Forgejo
+	// mirror) lives on the given host, e.g. {"git.example.org": 5m} — for
+	// instances run by someone else, which shouldn't be polled at a short
+	// sync_interval. Applies to peers added from the dashboard too. A
+	// value shorter than sync_interval has no effect.
+	HostSyncIntervals map[string]time.Duration `yaml:"host_sync_intervals"`
+	StateDB           string                   `yaml:"state_db"`
+	// PeersFile is where peers added through the dashboard's onboarding
+	// forms are mirrored out of state.db (see state.ExportDynamicRepos).
+	// Defaults to peers.yaml next to config.yaml.
+	PeersFile string     `yaml:"peers_file"`
+	Repos     []RepoPair `yaml:"repos"`
 	// SourceURL is graft's own source repository, shown in the status
 	// dashboard's footer. Optional.
 	SourceURL string `yaml:"source_url"`
@@ -225,4 +236,24 @@ func ReadToken(path string) (string, error) {
 		return "", fmt.Errorf("token file %s is empty", path)
 	}
 	return token, nil
+}
+
+// IntervalFor is how often pair should actually be synced: sync_interval,
+// or longer when one of its Forgejo hosts has a host_sync_intervals entry.
+func (c *Config) IntervalFor(pair RepoPair) time.Duration {
+	interval := c.SyncInterval
+	targets := []ForgejoTarget{pair.Forgejo}
+	if pair.ForgejoMirror != nil {
+		targets = append(targets, *pair.ForgejoMirror)
+	}
+	for _, t := range targets {
+		u, err := url.Parse(t.BaseURL)
+		if err != nil {
+			continue
+		}
+		if d, ok := c.HostSyncIntervals[u.Hostname()]; ok && d > interval {
+			interval = d
+		}
+	}
+	return interval
 }

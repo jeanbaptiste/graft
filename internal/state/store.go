@@ -210,6 +210,20 @@ CREATE TABLE IF NOT EXISTS pending_radicle_peer (
 -- available (see RepoSyncer.LogSocialReply's wiki.ErrForbidden path) —
 -- one per (repo_pair, platform), reused for every subsequent reply on
 -- that pair+platform instead of creating a new issue each time.
+-- One discussion issue per commit per series: the first social reply to
+-- any post about that commit opens it (on whichever pair logged the post's
+-- activity), and every later reply — whichever pair's activity it points
+-- at — lands as a comment on that same issue. Keyed by the short SHA, since
+-- every pair of a series logs the same commit under its own URL.
+CREATE TABLE IF NOT EXISTS commit_thread (
+	series     TEXT NOT NULL,
+	sha        TEXT NOT NULL,
+	repo_pair  TEXT NOT NULL,
+	forgejo_id INTEGER NOT NULL,
+	created_at TEXT NOT NULL,
+	PRIMARY KEY (series, sha)
+);
+
 CREATE TABLE IF NOT EXISTS social_fallback_issue (
 	repo_pair  TEXT NOT NULL,
 	platform   TEXT NOT NULL,
@@ -853,6 +867,25 @@ func (s *Store) SocialFallbackIssue(repoPair, platform string) (forgejoID int64,
 func (s *Store) SaveSocialFallbackIssue(repoPair, platform string, forgejoID int64, radicleID string) error {
 	_, err := s.db.Exec(`INSERT OR REPLACE INTO social_fallback_issue (repo_pair, platform, forgejo_id, radicle_id, created_at) VALUES (?, ?, ?, ?, ?)`,
 		repoPair, platform, forgejoID, radicleID, time.Now().UTC().Format(time.RFC3339))
+	return err
+}
+
+// CommitThread returns the discussion issue opened for commit sha in
+// series, and the pair whose Forgejo holds it.
+func (s *Store) CommitThread(series, sha string) (repoPair string, forgejoID int64, ok bool, err error) {
+	row := s.db.QueryRow(`SELECT repo_pair, forgejo_id FROM commit_thread WHERE series = ? AND sha = ?`, series, sha)
+	err = row.Scan(&repoPair, &forgejoID)
+	if err == sql.ErrNoRows {
+		return "", 0, false, nil
+	}
+	return repoPair, forgejoID, err == nil, err
+}
+
+// SaveCommitThread records the issue just opened for a commit's replies.
+// An existing thread for the same series and sha is kept, never replaced.
+func (s *Store) SaveCommitThread(series, sha, repoPair string, forgejoID int64) error {
+	_, err := s.db.Exec(`INSERT OR IGNORE INTO commit_thread (series, sha, repo_pair, forgejo_id, created_at) VALUES (?, ?, ?, ?, ?)`,
+		series, sha, repoPair, forgejoID, time.Now().UTC().Format(time.RFC3339))
 	return err
 }
 

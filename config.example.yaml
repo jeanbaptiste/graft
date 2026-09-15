@@ -3,7 +3,17 @@
 # (token_file), owned by the sync user, mode 600.
 
 sync_interval: 5m
+
+# Poll instances run by someone else less often than sync_interval.
+# Matches a pair's Forgejo (or forgejo_mirror) host, dashboard peers included.
+# host_sync_intervals:
+#   git.example.org: 5m
 state_db: /var/lib/graft/state.db
+
+# Peers added from the dashboard's onboarding forms are stored in state.db;
+# graft mirrors them to this file (default: peers.yaml next to this config)
+# and re-imports any the database has lost at startup. Optional.
+# peers_file: /etc/graft/peers.yaml
 
 # Shown in the status dashboard's footer. Optional.
 source_url: https://git.example.org/alice/graft
