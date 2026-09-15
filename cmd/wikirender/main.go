@@ -14,6 +14,7 @@ import (
 	"html"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -118,7 +119,47 @@ var (
 	reHeading    = regexp.MustCompile(`^(#{1,3})\s+(.*)$`)
 	reBullet     = regexp.MustCompile(`^-\s+(.*)$`)
 	reSocialPage = regexp.MustCompile(`^Social-([A-Za-z]+)$`)
+	// An entry's author as internal/wiki writes it: "**@name**".
+	reAuthor = regexp.MustCompile(`\*\*@([^*\s]+)\*\*`)
 )
+
+// profileLink, when set, maps an entry author's name to their profile URL
+// on the platform the page being rendered belongs to ("" = no link). Set
+// per page by main before rendering it; nil renders names as plain text.
+var profileLink func(name string) string
+
+// profileLinker returns the profile-URL builder for one Social-<platform>
+// page. Zulip has no profile URL addressable by display name, so its
+// authors stay plain text; so does any platform this renderer doesn't know.
+func profileLinker(platform, discourseURL, tangledURL string) func(string) string {
+	switch strings.ToLower(platform) {
+	case "discourse":
+		return func(name string) string {
+			return strings.TrimRight(discourseURL, "/") + "/u/" + url.PathEscape(name)
+		}
+	case "bluesky":
+		return func(name string) string {
+			if !strings.Contains(name, ".") {
+				return ""
+			}
+			return "https://bsky.app/profile/" + name
+		}
+	case "tangled":
+		return func(name string) string {
+			return strings.TrimRight(tangledURL, "/") + "/" + name
+		}
+	case "mastodon":
+		// graft records fediverse authors as user@instance.
+		return func(name string) string {
+			user, host, ok := strings.Cut(name, "@")
+			if !ok || user == "" || host == "" {
+				return ""
+			}
+			return "https://" + host + "/@" + url.PathEscape(user)
+		}
+	}
+	return nil
+}
 
 func inline(s string) string {
 	// The wiki source's own literal "&middot;" HTML entity must survive
@@ -146,6 +187,16 @@ func inline(s string) string {
 		}
 		return fmt.Sprintf(`<a href="%s">%s</a>`, href, text)
 	})
+	if profileLink != nil {
+		s = reAuthor.ReplaceAllStringFunc(s, func(m string) string {
+			name := reAuthor.FindStringSubmatch(m)[1]
+			href := profileLink(html.UnescapeString(name))
+			if href == "" {
+				return m
+			}
+			return fmt.Sprintf(`<strong><a href="%s">@%s</a></strong>`, html.EscapeString(href), name)
+		})
+	}
 	s = reBold.ReplaceAllString(s, `<strong>$1</strong>`)
 	// Single-asterisk emphasis — internal/wiki's page footer
 	// ("*Last updated: ...*") — only after bold has consumed every "**".
@@ -351,6 +402,8 @@ func main() {
 	tokenFile := flag.String("token-file", "/etc/graft/f1.token", "Forgejo token file (ignored for repos taken from -config, which name their own)")
 	base := flag.String("base", "https://f1.cyberwild.org", "Forgejo instance whose wikis are rendered")
 	reposFlag := flag.String("repos", defaultRepos, "comma-separated owner/repo:slug list; ignored when -config is set")
+	discourseURL := flag.String("discourse-url", "https://discourse.cyberwild.org", "Discourse instance authors on Social-Discourse pages link to")
+	tangledURL := flag.String("tangled-url", "https://tangled.cyberwild.org", "Tangled web UI authors on Social-Tangled pages link to")
 	configPath := flag.String("config", "", "graft config.yaml: when set, render every repo on -base from its pairs and peers file instead of -repos")
 	flag.Parse()
 
@@ -419,6 +472,10 @@ func main() {
 			if err != nil {
 				fmt.Println(r.slug, p.Title, "fetch error:", err)
 				continue
+			}
+			profileLink = nil
+			if plat := reSocialPage.FindStringSubmatch(p.Title); plat != nil {
+				profileLink = profileLinker(plat[1], *discourseURL, *tangledURL)
 			}
 			bodyHTML := renderMarkdown(md)
 

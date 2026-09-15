@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -469,6 +470,11 @@ func (h *Handler) handleReply(series string, remoteActor *Actor, note inboxNote)
 	who := remoteActor.PreferredUsername
 	if who == "" {
 		who = remoteActor.Name
+	}
+	// user@instance, the fediverse's own way of naming someone — and what
+	// lets the wiki link the name back to their profile.
+	if u, err := url.Parse(remoteActor.ID); err == nil && u.Hostname() != "" && remoteActor.PreferredUsername != "" {
+		who = remoteActor.PreferredUsername + "@" + u.Hostname()
 	}
 	content := stripHTML(note.Content)
 

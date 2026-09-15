@@ -24,3 +24,20 @@ func TestRenderCollapsesRepeatedRules(t *testing.T) {
 		t.Fatalf("got %q want %q", got, want)
 	}
 }
+
+func TestAuthorProfileLinks(t *testing.T) {
+	defer func() { profileLink = nil }()
+	cases := []struct{ platform, in, want string }{
+		{"Discourse", "**@pipeline-test-bot** wrote:", `<strong><a href="https://discourse.example/u/pipeline-test-bot">@pipeline-test-bot</a></strong> wrote:`},
+		{"Bluesky", "issue · **@juliette.pds.example**", `issue · <strong><a href="https://bsky.app/profile/juliette.pds.example">@juliette.pds.example</a></strong>`},
+		{"Mastodon", "**@lea.moreau@social.example** wrote:", `<strong><a href="https://social.example/@lea.moreau">@lea.moreau@social.example</a></strong> wrote:`},
+		{"Mastodon", "**@researcher** wrote:", `<strong>@researcher</strong> wrote:`},
+		{"Zulip", "**@thomas.k** wrote:", `<strong>@thomas.k</strong> wrote:`},
+	}
+	for _, c := range cases {
+		profileLink = profileLinker(c.platform, "https://discourse.example", "https://tangled.example")
+		if got := inline(c.in); got != c.want {
+			t.Errorf("%s: inline(%q)\n got  %q\n want %q", c.platform, c.in, got, c.want)
+		}
+	}
+}
