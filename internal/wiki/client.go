@@ -74,7 +74,7 @@ func (c *Client) AppendEntry(pageTitle, header, entryMarkdown string) error {
 	entryMarkdown = strings.TrimRight(entryMarkdown, "\n") + "\n\n---\n"
 
 	if existing == "" {
-		content := header + "\n\n" + entriesMarker + "\n\n" + entryMarkdown
+		content := header + "\n\n" + entriesMarker + "\n\n" + entryMarkdown + pageFooter()
 		return c.createPage(pageTitle, content)
 	}
 
@@ -83,11 +83,15 @@ func (c *Client) AppendEntry(pageTitle, header, entryMarkdown string) error {
 		// Marker missing (page edited by hand, or an older format) —
 		// append the marker plus the new entry at the end rather than
 		// silently dropping it.
-		content := strings.TrimRight(existing, "\n") + "\n\n" + entriesMarker + "\n\n" + entryMarkdown
+		content := strings.TrimRight(existing, "\n") + "\n\n" + entriesMarker + "\n\n" + entryMarkdown + pageFooter()
 		return c.updatePage(pageTitle, content, sha)
 	}
 	insertAt := idx + len(entriesMarker)
-	content := existing[:insertAt] + "\n\n" + entryMarkdown + strings.TrimLeft(existing[insertAt:], "\n")
+	// Remove old footer if present, add new entry and fresh footer
+	beforeMarker := existing[:insertAt]
+	afterMarker := strings.TrimLeft(existing[insertAt:], "\n")
+	afterMarker = removeFooter(afterMarker)
+	content := beforeMarker + "\n\n" + entryMarkdown + afterMarker + pageFooter()
 	return c.updatePage(pageTitle, content, sha)
 }
 
@@ -254,6 +258,19 @@ func urlEscape(s string) string {
 	// titles are plain ASCII with hyphens, so this is only ever exercised
 	// for those — kept simple rather than pulling in net/url just for this.
 	return strings.ReplaceAll(s, " ", "%20")
+}
+
+func pageFooter() string {
+	return "\n\n<!-- graft-sync @ " + time.Now().UTC().Format("2006-01-02 15:04 UTC") + " -->\n"
+}
+
+func removeFooter(content string) string {
+	// Remove the footer comment if present (<!-- graft-sync @ ... -->)
+	idx := strings.LastIndex(content, "\n\n<!-- graft-sync @")
+	if idx < 0 {
+		return content
+	}
+	return strings.TrimRight(content[:idx], "\n")
 }
 
 func truncate(b []byte, n int) string {
