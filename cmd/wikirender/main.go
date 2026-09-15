@@ -164,6 +164,9 @@ func renderMarkdown(md string) string {
 		if trimmed == "<!-- graft:entries -->" {
 			continue
 		}
+		if strings.HasPrefix(trimmed, "<!-- graft-sync @") {
+			continue
+		}
 		if trimmed == "" {
 			closeQuote()
 			closeList()

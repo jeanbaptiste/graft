@@ -261,7 +261,7 @@ func urlEscape(s string) string {
 }
 
 func pageFooter() string {
-	return "\n\n<!-- graft-sync @ " + time.Now().UTC().Format("2006-01-02 15:04 UTC") + " -->\n"
+	return "\n\n---\n\n*Last updated: " + time.Now().UTC().Format("2006-01-02 15:04 UTC") + "*\n"
 }
 
 func removeFooter(content string) string {
