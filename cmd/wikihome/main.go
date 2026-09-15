@@ -97,11 +97,11 @@ func upsertPage(token, base, owner, repo, title, content string) error {
 }
 
 var platformInfo = map[string]struct{ label, blurb string }{
-	"Social-Discourse":  {"Discourse", "Forum replies about this repository, relayed via the Discourse bridge."},
-	"Social-Zulip":      {"Zulip", "Chat replies about this repository, relayed via the Zulip bridge."},
-	"Social-Mastodon":   {"Mastodon / Fediverse", "Native ActivityPub replies from the wider Fediverse."},
-	"Social-Tangled":    {"Tangled", "Comments on this repository's mirrored Tangled issues (AT Proto)."},
-	"Social-Bluesky":    {"Bluesky", "Replies to this repository's posts on Bluesky (AT Proto)."},
+	"Social-Discourse": {"Discourse", "Forum replies about this repository, relayed via the Discourse bridge."},
+	"Social-Zulip":     {"Zulip", "Chat replies about this repository, relayed via the Zulip bridge."},
+	"Social-Mastodon":  {"Mastodon / Fediverse", "Native ActivityPub replies from the wider Fediverse."},
+	"Social-Tangled":   {"Tangled", "Comments on this repository's mirrored Tangled issues (AT Proto)."},
+	"Social-Bluesky":   {"Bluesky", "Replies to this repository's posts on Bluesky (AT Proto)."},
 }
 
 var platformOrder = []string{"Social-Discourse", "Social-Zulip", "Social-Mastodon", "Social-Tangled", "Social-Bluesky"}

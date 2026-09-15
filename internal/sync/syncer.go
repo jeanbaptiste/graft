@@ -312,21 +312,38 @@ func (rs *RepoSyncer) LogSocialReply(platform, author, body, itemKind, itemTitle
 	return rs.postToFallbackIssue(platform, tagged)
 }
 
+// CommitThreadElsewhereError is returned by LogSocialReply for a reply to
+// a commit whose discussion issue lives on another pair of the same series
+// (each pair logs the same commit as its own activity, so a reply can point
+// at any of them). The caller retries on that pair's RepoSyncer.
+type CommitThreadElsewhereError struct {
+	RepoPair string
+}
+
+func (e *CommitThreadElsewhereError) Error() string {
+	return "commit discussion is held by pair " + e.RepoPair
+}
+
 // logCommitReply turns a social reply to a commit's post into a real
 // discussion thread: the commit's first reply opens a dedicated Forgejo
-// issue on this pair, and every later reply to the same commit becomes a
-// comment on it. Unlike a reply to an issue or patch — which already has
-// its own thread, so only the wiki timeline records it — a commit has
-// nowhere else for a conversation to live. The issue and its comments are
-// ordinary Forgejo content, so the regular issue and comment sync carries
-// them on to Radicle and every other forge in the federation.
+// issue, and every later reply to the same commit — from any pair of the
+// series — becomes a comment on it. Unlike a reply to an issue or patch,
+// which already has its own thread (only the wiki timeline records it), a
+// commit has nowhere else for a conversation to live. The issue and its
+// comments are ordinary Forgejo content, so the regular issue and comment
+// sync carries them on to Radicle and every other forge in the federation.
 func (rs *RepoSyncer) logCommitReply(platform, author, body, commitSummary, commitURL, sourceURL string) error {
-	if commitURL == "" {
-		return fmt.Errorf("commit reply on %s: activity has no commit URL", rs.pair.Name)
+	sha := commitSHA(commitSummary, commitURL)
+	if sha == "" {
+		return fmt.Errorf("commit reply on %s: cannot tell which commit %q is", rs.pair.Name, commitSummary)
 	}
-	issueID, ok, err := rs.state.CommitDiscussion(rs.pair.Name, commitURL)
+	series := rs.Series()
+	holder, issueID, ok, err := rs.state.CommitThread(series, sha)
 	if err != nil {
 		return fmt.Errorf("look up commit discussion: %w", err)
+	}
+	if ok && holder != rs.pair.Name {
+		return &CommitThreadElsewhereError{RepoPair: holder}
 	}
 	if !ok {
 		title := "Discussion du commit " + truncateTitle(commitSummary, 80)
@@ -336,17 +353,39 @@ func (rs *RepoSyncer) logCommitReply(platform, author, body, commitSummary, comm
 		if err != nil {
 			return fmt.Errorf("open commit discussion issue: %w", err)
 		}
-		if err := rs.state.SaveCommitDiscussion(rs.pair.Name, commitURL, issue.Index); err != nil {
+		if err := rs.state.SaveCommitThread(series, sha, rs.pair.Name, issue.Index); err != nil {
 			return fmt.Errorf("save commit discussion: %w", err)
 		}
 		issueID = issue.Index
-		slog.Info("opened commit discussion", "pair", rs.pair.Name, "commit", commitURL, "issue", issueID)
+		slog.Info("opened commit discussion", "pair", rs.pair.Name, "series", series, "sha", sha, "issue", issueID)
 	}
 	comment := fmt.Sprintf("**via %s, %s:**\n\n%s", platform, author, strings.TrimSpace(body))
 	if sourceURL != "" {
 		comment += fmt.Sprintf("\n\n[→ %s conversation](%s)", platform, sourceURL)
 	}
 	return rs.forgejo.CreateIssueComment(issueID, comment)
+}
+
+// commitSHA is the 7-character short SHA identifying a commit across
+// pairs: the "%h %s" summary graft logs starts with it, and the commit
+// URL (Forgejo .../commit/<sha>, Radicle .../commits/<sha>) ends with the
+// full SHA.
+func commitSHA(summary, url string) string {
+	isHex := func(s string) bool {
+		for _, r := range s {
+			if !strings.ContainsRune("0123456789abcdef", r) {
+				return false
+			}
+		}
+		return s != ""
+	}
+	if first, _, _ := strings.Cut(strings.TrimSpace(summary), " "); len(first) >= 7 && isHex(first) {
+		return first[:7]
+	}
+	if i := strings.LastIndex(url, "/"); i >= 0 && len(url)-i-1 >= 7 && isHex(url[i+1:]) {
+		return url[i+1 : i+8]
+	}
+	return ""
 }
 
 func truncateTitle(s string, max int) string {

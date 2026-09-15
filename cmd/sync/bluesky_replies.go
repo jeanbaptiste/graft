@@ -140,7 +140,7 @@ func pollSeriesReplies(series, handle, appPassword, pdsHost string, live *liveSt
 			itemTitle = e.RepoPair
 		}
 		sourceURL := blueskyPermalink(n.Author.Handle, n.URI)
-		if err := rs.LogSocialReply("Bluesky", "@"+n.Author.Handle, strings.TrimSpace(n.Record.Text), e.Kind, itemTitle, e.URL, sourceURL, e.ForgejoID, e.RadicleID, time.Now()); err != nil {
+		if err := logSocialReplyRouted(live, rs, "Bluesky", "@"+n.Author.Handle, strings.TrimSpace(n.Record.Text), e.Kind, itemTitle, e.URL, sourceURL, e.ForgejoID, e.RadicleID); err != nil {
 			log.Error("bluesky reply: log social reply", "series", series, "repo_pair", e.RepoPair, "err", err)
 			continue
 		}

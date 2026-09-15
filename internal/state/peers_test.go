@@ -74,23 +74,27 @@ func TestPeersFileRoundTripRestoresLostPeers(t *testing.T) {
 	}
 }
 
-func TestCommitDiscussionIsReusedPerCommit(t *testing.T) {
+func TestCommitThreadIsOnePerSeriesAndSHA(t *testing.T) {
 	st, err := Open(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	const url = "https://f1.example/o/r/commit/abc"
-	if _, ok, err := st.CommitDiscussion("pair", url); err != nil || ok {
+	if _, _, ok, err := st.CommitThread("graft-source", "4edbad6"); err != nil || ok {
 		t.Fatalf("fresh store: ok=%v err=%v", ok, err)
 	}
-	if err := st.SaveCommitDiscussion("pair", url, 42); err != nil {
+	if err := st.SaveCommitThread("graft-source", "4edbad6", "graft-source-f1", 50); err != nil {
 		t.Fatal(err)
 	}
-	if id, ok, err := st.CommitDiscussion("pair", url); err != nil || !ok || id != 42 {
-		t.Fatalf("after save: id=%d ok=%v err=%v", id, ok, err)
+	// A second pair of the same series must not take the thread over.
+	if err := st.SaveCommitThread("graft-source", "4edbad6", "graft-source-f2", 52); err != nil {
+		t.Fatal(err)
 	}
-	if _, ok, _ := st.CommitDiscussion("other-pair", url); ok {
-		t.Fatal("discussion leaked across pairs")
+	pair, id, ok, err := st.CommitThread("graft-source", "4edbad6")
+	if err != nil || !ok || pair != "graft-source-f1" || id != 50 {
+		t.Fatalf("got pair=%q id=%d ok=%v err=%v", pair, id, ok, err)
+	}
+	if _, _, ok, _ := st.CommitThread("federation-x", "4edbad6"); ok {
+		t.Fatal("thread leaked across series")
 	}
 }

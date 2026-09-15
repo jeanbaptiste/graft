@@ -210,15 +210,18 @@ CREATE TABLE IF NOT EXISTS pending_radicle_peer (
 -- available (see RepoSyncer.LogSocialReply's wiki.ErrForbidden path) —
 -- one per (repo_pair, platform), reused for every subsequent reply on
 -- that pair+platform instead of creating a new issue each time.
--- One Forgejo issue per commit that received a social reply: the first
--- reply to a commit's post opens it, later replies to the same commit land
--- as comments on it. Keyed by the commit's URL as logged in activity_log.
-CREATE TABLE IF NOT EXISTS commit_discussion (
+-- One discussion issue per commit per series: the first social reply to
+-- any post about that commit opens it (on whichever pair logged the post's
+-- activity), and every later reply — whichever pair's activity it points
+-- at — lands as a comment on that same issue. Keyed by the short SHA, since
+-- every pair of a series logs the same commit under its own URL.
+CREATE TABLE IF NOT EXISTS commit_thread (
+	series     TEXT NOT NULL,
+	sha        TEXT NOT NULL,
 	repo_pair  TEXT NOT NULL,
-	commit_url TEXT NOT NULL,
 	forgejo_id INTEGER NOT NULL,
 	created_at TEXT NOT NULL,
-	PRIMARY KEY (repo_pair, commit_url)
+	PRIMARY KEY (series, sha)
 );
 
 CREATE TABLE IF NOT EXISTS social_fallback_issue (
@@ -867,22 +870,22 @@ func (s *Store) SaveSocialFallbackIssue(repoPair, platform string, forgejoID int
 	return err
 }
 
-// CommitDiscussion returns the Forgejo issue opened for replies to the
-// commit at commitURL on repoPair, if any.
-func (s *Store) CommitDiscussion(repoPair, commitURL string) (forgejoID int64, ok bool, err error) {
-	row := s.db.QueryRow(`SELECT forgejo_id FROM commit_discussion WHERE repo_pair = ? AND commit_url = ?`, repoPair, commitURL)
-	err = row.Scan(&forgejoID)
+// CommitThread returns the discussion issue opened for commit sha in
+// series, and the pair whose Forgejo holds it.
+func (s *Store) CommitThread(series, sha string) (repoPair string, forgejoID int64, ok bool, err error) {
+	row := s.db.QueryRow(`SELECT repo_pair, forgejo_id FROM commit_thread WHERE series = ? AND sha = ?`, series, sha)
+	err = row.Scan(&repoPair, &forgejoID)
 	if err == sql.ErrNoRows {
-		return 0, false, nil
+		return "", 0, false, nil
 	}
-	return forgejoID, err == nil, err
+	return repoPair, forgejoID, err == nil, err
 }
 
-// SaveCommitDiscussion records the issue just opened for a commit's
-// replies, so later replies to that commit reuse it.
-func (s *Store) SaveCommitDiscussion(repoPair, commitURL string, forgejoID int64) error {
-	_, err := s.db.Exec(`INSERT OR REPLACE INTO commit_discussion (repo_pair, commit_url, forgejo_id, created_at) VALUES (?, ?, ?, ?)`,
-		repoPair, commitURL, forgejoID, time.Now().UTC().Format(time.RFC3339))
+// SaveCommitThread records the issue just opened for a commit's replies.
+// An existing thread for the same series and sha is kept, never replaced.
+func (s *Store) SaveCommitThread(series, sha, repoPair string, forgejoID int64) error {
+	_, err := s.db.Exec(`INSERT OR IGNORE INTO commit_thread (series, sha, repo_pair, forgejo_id, created_at) VALUES (?, ?, ?, ?, ?)`,
+		series, sha, repoPair, forgejoID, time.Now().UTC().Format(time.RFC3339))
 	return err
 }
 

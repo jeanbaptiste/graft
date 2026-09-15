@@ -4,6 +4,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -139,7 +140,7 @@ func main() {
 				if !ok {
 					return fmt.Errorf("unknown repo pair %q", repoPair)
 				}
-				err := rs.LogSocialReply(platform, author, body, itemKind, itemTitle, itemURL, sourceURL, forgejoID, radicleID, time.Now())
+				err := logSocialReplyRouted(live, rs, platform, author, body, itemKind, itemTitle, itemURL, sourceURL, forgejoID, radicleID)
 				log.Info("postSocial: LogSocialReply returned", "repo_pair", repoPair, "err", err)
 				return err
 			},
@@ -494,6 +495,22 @@ func materializeDynamicRepos(st *state.Store, live *liveState, stateDir string, 
 		changed = true
 	}
 	return changed
+}
+
+// logSocialReplyRouted is RepoSyncer.LogSocialReply, retried on the pair
+// that actually holds a commit's discussion issue when it isn't rs's own
+// (see gsync.CommitThreadElsewhereError).
+func logSocialReplyRouted(live *liveState, rs *gsync.RepoSyncer, platform, author, body, itemKind, itemTitle, itemURL, sourceURL string, forgejoID int64, radicleID string) error {
+	err := rs.LogSocialReply(platform, author, body, itemKind, itemTitle, itemURL, sourceURL, forgejoID, radicleID, time.Now())
+	var elsewhere *gsync.CommitThreadElsewhereError
+	if errors.As(err, &elsewhere) {
+		holder, ok := live.syncerForPair(elsewhere.RepoPair)
+		if !ok {
+			return fmt.Errorf("commit discussion held by unknown pair %q", elsewhere.RepoPair)
+		}
+		return holder.LogSocialReply(platform, author, body, itemKind, itemTitle, itemURL, sourceURL, forgejoID, radicleID, time.Now())
+	}
+	return err
 }
 
 // exportPeers keeps the peers file in step with dynamic_repo. Called at

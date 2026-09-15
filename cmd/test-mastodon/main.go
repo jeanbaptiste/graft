@@ -43,23 +43,23 @@ func postToMastodon(instanceURL, username, text string) error {
 	actorID := fmt.Sprintf("%s/users/%s", instanceURL, username)
 
 	note := map[string]interface{}{
-		"@context": "https://www.w3.org/ns/activitystreams",
-		"type":     "Note",
-		"id":       noteID,
-		"content":  text,
+		"@context":     "https://www.w3.org/ns/activitystreams",
+		"type":         "Note",
+		"id":           noteID,
+		"content":      text,
 		"attributedTo": actorID,
 		"published":    time.Now().UTC().Format(time.RFC3339),
-		"to": []string{"https://www.w3.org/ns/activitystreams#Public"},
+		"to":           []string{"https://www.w3.org/ns/activitystreams#Public"},
 	}
 
 	create := map[string]interface{}{
-		"@context": "https://www.w3.org/ns/activitystreams",
-		"type":     "Create",
-		"id":       fmt.Sprintf("%s/create/%d", instanceURL, time.Now().UnixNano()),
-		"actor":    actorID,
-		"object":   note,
+		"@context":  "https://www.w3.org/ns/activitystreams",
+		"type":      "Create",
+		"id":        fmt.Sprintf("%s/create/%d", instanceURL, time.Now().UnixNano()),
+		"actor":     actorID,
+		"object":    note,
 		"published": time.Now().UTC().Format(time.RFC3339),
-		"to": []string{"https://www.w3.org/ns/activitystreams#Public"},
+		"to":        []string{"https://www.w3.org/ns/activitystreams#Public"},
 	}
 
 	body, err := json.Marshal(create)
