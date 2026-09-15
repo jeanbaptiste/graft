@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -46,6 +47,19 @@ func main() {
 		os.Exit(1)
 	}
 	defer st.Close()
+
+	peersFile := cfg.PeersFile
+	if peersFile == "" {
+		peersFile = filepath.Join(filepath.Dir(*configPath), "peers.yaml")
+	}
+	// Before anything reads dynamic_repo: a peer the peers file knows but
+	// state.db lost (restored from an old backup, or recreated empty)
+	// comes back here instead of silently vanishing from the federation.
+	if restored, err := st.ImportDynamicRepos(peersFile); err != nil {
+		log.Error("import peers file", "path", peersFile, "err", err)
+	} else if len(restored) > 0 {
+		log.Warn("restored onboarded peers missing from state db", "path", peersFile, "peers", restored)
+	}
 
 	stateDir := cfg.StateDB
 	if idx := lastSlash(stateDir); idx >= 0 {
@@ -96,6 +110,7 @@ func main() {
 	// RepoSyncer for it". Load all of them now, not just ones still
 	// pending their first sync.
 	loadAllDynamicRepos(st, live, stateDir, log)
+	exportPeers(st, peersFile, log)
 	detectAuthorizedIntegrations(live.pairsBySeriesSnapshot(), log)
 	live.rebuildTopology(cfg)
 
@@ -152,14 +167,32 @@ func main() {
 		Series:         live.seriesInfos,
 	})
 
+	// lastRun lets one fast ticker drive every pair while pairs on a
+	// host_sync_intervals host still only run at their own, slower pace.
+	// Only touched from the runAll goroutine.
+	lastRun := map[string]time.Time{}
+
 	runAll := func() {
+		exportPeers(st, peersFile, log)
 		if materializeDynamicRepos(st, live, stateDir, log) {
 			detectAuthorizedIntegrations(live.pairsBySeriesSnapshot(), log)
 			live.rebuildTopology(cfg)
 			tracker.SetTopology(live.topologySnapshot())
 			tracker.SetBlueskyConfigured(blueskyConfigured(live.pairsSnapshot()))
 		}
+		pairsByName := map[string]config.RepoPair{}
+		for _, p := range live.pairsSnapshot() {
+			pairsByName[p.Name] = p
+		}
 		for _, rs := range live.syncersSnapshot() {
+			if p, ok := pairsByName[rs.Name()]; ok {
+				// A second of slack so a pass that starts a hair early
+				// on the next tick isn't skipped for a whole interval.
+				if last, ran := lastRun[rs.Name()]; ran && time.Since(last) < cfg.IntervalFor(p)-time.Second {
+					continue
+				}
+			}
+			lastRun[rs.Name()] = time.Now()
 			gitErr, issuesErr, patchErr := rs.Run(log)
 			tracker.Record(rs.Name(), rs.Series(), gitErr, issuesErr, patchErr)
 		}
@@ -461,6 +494,20 @@ func materializeDynamicRepos(st *state.Store, live *liveState, stateDir string, 
 		changed = true
 	}
 	return changed
+}
+
+// exportPeers keeps the peers file in step with dynamic_repo. Called at
+// startup and every pass, so an approval from /admin/pending reaches the
+// file within one sync interval; a no-op when nothing changed.
+func exportPeers(st *state.Store, path string, log *slog.Logger) {
+	changed, err := st.ExportDynamicRepos(path)
+	if err != nil {
+		log.Error("export peers file", "path", path, "err", err)
+		return
+	}
+	if changed {
+		log.Info("peers file updated", "path", path)
+	}
 }
 
 // blueskyConfigured maps each series to its AT Proto handle, for the

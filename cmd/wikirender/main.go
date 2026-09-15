@@ -9,6 +9,7 @@ package main
 import (
 	"encoding/base64"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"html"
 	"io"
@@ -17,6 +18,9 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"graft/internal/config"
+	"graft/internal/state"
 )
 
 func read(path string) string {
@@ -97,7 +101,11 @@ func getPageContent(client *http.Client, token, base, owner, repo, subURL string
 // lists) — not arbitrary CommonMark. ---
 
 var (
-	reBold = regexp.MustCompile(`\*\*(.+?)\*\*`)
+	reBold   = regexp.MustCompile(`\*\*(.+?)\*\*`)
+	reItalic = regexp.MustCompile(`(^|[^*\w])\*([^*\s][^*]*?)\*`)
+	// Underscore emphasis, only as a whole word ("_like this_"), so
+	// snake_case identifiers in mirrored text stay untouched.
+	reItalicUnderscore = regexp.MustCompile(`(^|[^\w])_([^_\s][^_]*?)_($|[^\w])`)
 	// Non-greedy across the link text, not "any run of non-] chars": a
 	// mirrored issue title that itself starts with a literal bracketed
 	// tag ("[TEST-PIPELINE] Post-incident...") has a "]" inside the link
@@ -139,6 +147,10 @@ func inline(s string) string {
 		return fmt.Sprintf(`<a href="%s">%s</a>`, href, text)
 	})
 	s = reBold.ReplaceAllString(s, `<strong>$1</strong>`)
+	// Single-asterisk emphasis — internal/wiki's page footer
+	// ("*Last updated: ...*") — only after bold has consumed every "**".
+	s = reItalic.ReplaceAllString(s, `$1<em>$2</em>`)
+	s = reItalicUnderscore.ReplaceAllString(s, `$1<em>$2</em>$3`)
 	return s
 }
 
@@ -175,7 +187,9 @@ func renderMarkdown(md string) string {
 		if trimmed == "---" {
 			closeQuote()
 			closeList()
-			out.WriteString("<hr>\n")
+			if !strings.HasSuffix(out.String(), "<hr>\n") {
+				out.WriteString("<hr>\n")
+			}
 			continue
 		}
 		if m := reHeading.FindStringSubmatch(trimmed); m != nil {
@@ -266,26 +280,127 @@ func writeHTML(outPath, title, crumbs, bodyHTML string) error {
 
 type repoSpec struct {
 	owner, repo, slug string
+	// tokenFile overrides the global -token-file for this repo (set when
+	// the repo list comes from graft's config, where each pair names its
+	// own token).
+	tokenFile string
+}
+
+// defaultRepos is what this command rendered before it took any flags —
+// kept as the default so an unchanged invocation behaves exactly as before.
+const defaultRepos = "forgeadmin/constitution:constitution,forgeadmin/graft:graft-source," +
+	"forgeadmin/federation-x:federation-x,forgeadmin/graft-test-v2:graft-test-v2," +
+	"forgeadmin/graft-presentation:graft-presentation"
+
+// parseRepoSpecs parses -repos: comma-separated owner/repo:slug entries.
+func parseRepoSpecs(s string) ([]repoSpec, error) {
+	var out []repoSpec
+	for _, item := range strings.Split(s, ",") {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		path, slug, _ := strings.Cut(item, ":")
+		owner, repo, ok := strings.Cut(path, "/")
+		if !ok || owner == "" || repo == "" {
+			return nil, fmt.Errorf("bad -repos entry %q (want owner/repo[:slug])", item)
+		}
+		if slug == "" {
+			slug = repo
+		}
+		out = append(out, repoSpec{owner: owner, repo: repo, slug: slug})
+	}
+	return out, nil
+}
+
+// reposFromGraft picks, from graft's static pairs and onboarded peers,
+// every Forgejo repo hosted on base — once each, slugged by its series
+// (the same slug the hard-coded list used: forgeadmin/graft is
+// "graft-source"). Repos on other instances are skipped: this renderer
+// only ever talks to one Forgejo.
+func reposFromGraft(base string, pairs []config.RepoPair, peers []state.DynamicRepo) []repoSpec {
+	norm := func(u string) string { return strings.TrimRight(u, "/") }
+	seen := map[string]bool{}
+	var out []repoSpec
+	add := func(t config.ForgejoTarget, series string) {
+		key := t.Owner + "/" + t.Repo
+		if norm(t.BaseURL) != norm(base) || seen[key] {
+			return
+		}
+		seen[key] = true
+		slug := series
+		if slug == "" {
+			slug = t.Repo
+		}
+		out = append(out, repoSpec{owner: t.Owner, repo: t.Repo, slug: slug, tokenFile: t.TokenFile})
+	}
+	for _, p := range pairs {
+		add(p.Forgejo, p.Series)
+		if p.ForgejoMirror != nil {
+			add(*p.ForgejoMirror, p.Series)
+		}
+	}
+	for _, d := range peers {
+		add(config.ForgejoTarget{BaseURL: d.ForgejoBaseURL, Owner: d.ForgejoOwner, Repo: d.ForgejoRepo, TokenFile: d.ForgejoTokenFile}, d.Series)
+	}
+	return out
 }
 
 func main() {
-	token := read("/etc/graft/f1.token")
-	base := "https://f1.cyberwild.org"
-	outRoot := "/var/www/graft-presentation/wiki"
-	client := &http.Client{}
+	outRoot := flag.String("out", "/var/www/graft-presentation/wiki", "directory the rendered wiki is written to")
+	tokenFile := flag.String("token-file", "/etc/graft/f1.token", "Forgejo token file (ignored for repos taken from -config, which name their own)")
+	base := flag.String("base", "https://f1.cyberwild.org", "Forgejo instance whose wikis are rendered")
+	reposFlag := flag.String("repos", defaultRepos, "comma-separated owner/repo:slug list; ignored when -config is set")
+	configPath := flag.String("config", "", "graft config.yaml: when set, render every repo on -base from its pairs and peers file instead of -repos")
+	flag.Parse()
 
-	repos := []repoSpec{
-		{"forgeadmin", "constitution", "constitution"},
-		{"forgeadmin", "graft", "graft-source"},
-		{"forgeadmin", "federation-x", "federation-x"},
-		{"forgeadmin", "graft-test-v2", "graft-test-v2"},
-		{"forgeadmin", "graft-presentation", "graft-presentation"},
+	var repos []repoSpec
+	if *configPath != "" {
+		cfg, err := config.Load(*configPath)
+		if err != nil {
+			fmt.Println("load config:", err)
+			os.Exit(1)
+		}
+		peersFile := cfg.PeersFile
+		if peersFile == "" {
+			peersFile = filepath.Join(filepath.Dir(*configPath), "peers.yaml")
+		}
+		peers, err := state.ReadPeersFile(peersFile)
+		if err != nil {
+			fmt.Println("read peers file:", err)
+			os.Exit(1)
+		}
+		repos = reposFromGraft(*base, cfg.Repos, peers)
+	} else {
+		var err error
+		if repos, err = parseRepoSpecs(*reposFlag); err != nil {
+			fmt.Println(err)
+			os.Exit(2)
+		}
+	}
+	if len(repos) == 0 {
+		fmt.Println("no repos to render")
+		os.Exit(1)
+	}
+
+	client := &http.Client{}
+	tokens := map[string]string{}
+	tokenFor := func(r repoSpec) string {
+		path := *tokenFile
+		if r.tokenFile != "" {
+			path = r.tokenFile
+		}
+		if _, ok := tokens[path]; !ok {
+			tokens[path] = read(path)
+		}
+		return tokens[path]
 	}
 
 	var indexLinks []string
 
 	for _, r := range repos {
-		pages, err := listPages(client, token, base, r.owner, r.repo)
+		token := tokenFor(r)
+		pages, err := listPages(client, token, *base, r.owner, r.repo)
 		if err != nil {
 			fmt.Println(r.slug, "list error:", err)
 			continue
@@ -300,7 +415,7 @@ func main() {
 			if strings.HasPrefix(p.Title, "_") {
 				continue // _Sidebar, _Footer: navigation, not content pages
 			}
-			md, err := getPageContent(client, token, base, r.owner, r.repo, p.SubURL)
+			md, err := getPageContent(client, token, *base, r.owner, r.repo, p.SubURL)
 			if err != nil {
 				fmt.Println(r.slug, p.Title, "fetch error:", err)
 				continue
@@ -311,7 +426,7 @@ func main() {
 			if p.Title != "Home" {
 				fileName = strings.ToLower(strings.ReplaceAll(p.Title, " ", "-")) + ".html"
 			}
-			outPath := filepath.Join(outRoot, r.slug, fileName)
+			outPath := filepath.Join(*outRoot, r.slug, fileName)
 			crumbs := fmt.Sprintf(`<a href="/wiki/">wiki</a> &rsaquo; <a href="/wiki/%s/">%s</a> &rsaquo; %s`, r.slug, r.slug, html.EscapeString(p.Title))
 			if p.Title == "Home" {
 				// Deferred: the sub-page list (repoLinks) isn't complete
@@ -343,7 +458,7 @@ func main() {
 
 	// top-level index of every repo that has a rendered wiki
 	topBody := "<h1>graft — wiki mirror</h1>\n<p>Static, styled snapshot of every repo's Forgejo wiki, refreshed periodically.</p>\n<ul>\n" + strings.Join(indexLinks, "\n") + "\n</ul>\n"
-	if err := writeHTML(filepath.Join(outRoot, "index.html"), "graft — wiki mirror", "wiki", topBody); err != nil {
+	if err := writeHTML(filepath.Join(*outRoot, "index.html"), "graft — wiki mirror", "wiki", topBody); err != nil {
 		fmt.Println("top index write error:", err)
 	}
 }
