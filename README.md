@@ -4,6 +4,12 @@ A daemon and web-UI that mirrors repositories between Forgejo instances. Also co
 
 It runs on a timer, keeps state in a local SQLite file, and never force-pushes. Real divergences between the two sides are reported and left for humans to resolve.
 
+## Nodes
+
+- [github.com/jeanbaptiste/graft](https://github.com/jeanbaptiste/graft)
+- [f1.cyberwild.org/forgeadmin/graft](https://f1.cyberwild.org/forgeadmin/graft)
+- [artefacts.bimr.net/alice/graft](https://artefacts.bimr.net/alice/graft)
+
 ## What it syncs
 
 - **Git content**: the default branch, fast-forward only.
