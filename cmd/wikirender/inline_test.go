@@ -43,3 +43,16 @@ func TestAuthorProfileLinks(t *testing.T) {
 		}
 	}
 }
+
+func TestMastodonTrackbackMentionsSeriesThread(t *testing.T) {
+	defer func() { fediverseThread.url, fediverseThread.handle = "", "" }()
+	fediverseThread.url, fediverseThread.handle = "https://graft.example/actors/constitution", "@constitution@graft.example"
+	got := inline("[→ Mastodon conversation](https://social.example/@lea/1)")
+	want := `<a href="https://social.example/@lea/1">→ Mastodon conversation</a> · <a href="https://graft.example/actors/constitution">fil @constitution@graft.example</a>`
+	if got != want {
+		t.Fatalf("got  %q\nwant %q", got, want)
+	}
+	if got := inline("[→ Discourse conversation](https://d.example/t/x/1/2)"); got != `<a href="https://d.example/t/x/1/2">→ Discourse conversation</a>` {
+		t.Fatalf("non-Mastodon trackback changed: %q", got)
+	}
+}

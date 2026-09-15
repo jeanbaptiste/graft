@@ -129,6 +129,12 @@ var (
 // per page by main before rendering it; nil renders names as plain text.
 var profileLink func(name string) string
 
+// fediverseThread, when set (Social-Mastodon pages), is the public page of
+// the series' ActivityPub actor — the thread every fediverse reply on the
+// page answered. It is shown next to each Mastodon trackback, since the
+// individual notes graft publishes are ActivityPub JSON, not web pages.
+var fediverseThread struct{ url, handle string }
+
 // profileLinker returns the profile-URL builder for one Social-<platform>
 // page. Zulip has no profile URL addressable by display name, so its
 // authors stay plain text; so does any platform this renderer doesn't know.
@@ -186,7 +192,11 @@ func inline(s string) string {
 		if plat := reSocialPage.FindStringSubmatch(href); plat != nil {
 			href = "social-" + strings.ToLower(plat[1]) + ".html"
 		}
-		return fmt.Sprintf(`<a href="%s">%s</a>`, href, text)
+		link := fmt.Sprintf(`<a href="%s">%s</a>`, href, text)
+		if fediverseThread.url != "" && text == "→ Mastodon conversation" {
+			link += fmt.Sprintf(` · <a href="%s">fil %s</a>`, html.EscapeString(fediverseThread.url), html.EscapeString(fediverseThread.handle))
+		}
+		return link
 	})
 	s = reAuthor.ReplaceAllStringFunc(s, func(m string) string {
 		name := reAuthor.FindStringSubmatch(m)[1]
@@ -404,6 +414,7 @@ func main() {
 	tokenFile := flag.String("token-file", "/etc/graft/f1.token", "Forgejo token file (ignored for repos taken from -config, which name their own)")
 	base := flag.String("base", "https://f1.cyberwild.org", "Forgejo instance whose wikis are rendered")
 	reposFlag := flag.String("repos", defaultRepos, "comma-separated owner/repo:slug list; ignored when -config is set")
+	graftURL := flag.String("graft-url", "https://graft.cyberwild.org", "graft instance whose per-series ActivityPub actors fediverse replies answered (\"\" to omit the thread link)")
 	discourseURL := flag.String("discourse-url", "https://discourse.cyberwild.org", "Discourse instance authors on Social-Discourse pages link to")
 	tangledURL := flag.String("tangled-url", "https://tangled.cyberwild.org", "Tangled web UI authors on Social-Tangled pages link to")
 	configPath := flag.String("config", "", "graft config.yaml: when set, render every repo on -base from its pairs and peers file instead of -repos")
@@ -476,8 +487,14 @@ func main() {
 				continue
 			}
 			profileLink = nil
+			fediverseThread.url, fediverseThread.handle = "", ""
 			if plat := reSocialPage.FindStringSubmatch(p.Title); plat != nil {
 				profileLink = profileLinker(plat[1], *discourseURL, *tangledURL)
+				if strings.EqualFold(plat[1], "mastodon") && *graftURL != "" {
+					host := strings.TrimPrefix(strings.TrimPrefix(strings.TrimRight(*graftURL, "/"), "https://"), "http://")
+					fediverseThread.url = strings.TrimRight(*graftURL, "/") + "/actors/" + r.slug
+					fediverseThread.handle = "@" + r.slug + "@" + host
+				}
 			}
 			bodyHTML := renderMarkdown(md)
 
