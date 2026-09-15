@@ -44,15 +44,3 @@ For example, the user **rvba** on the artefacts.bimr.net can create a fork or th
 In this scenario, the user rvba is registered as a **collaborator** within alice proxy repo. The user has now the possiblity to have direct contribution to to shared repo (with a broadcast effect), and/or to have separate branches and work with PR's from his own fork.
 
 ![forgejo_sync.png](img/forgejo_sync.png)
-
-![forgejo_sync.png](.img/forgejo_sync.png)
-
-![forgejo_sync.png](../img/forgejo_sync.png)
-
-![forgejo_sync.png](~/docs/img/forgejo_sync.png)
-
-![forgejo_sync.png](/docs/img/forgejo_sync.png)
-
-![forgejo_sync.png](/raw/branch/main/docs/img/forgejo_sync.png)
-
-<img src="/docs/img/forgejo_sync.png" alt="forgejo_sync.png">
