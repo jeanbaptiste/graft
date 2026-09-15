@@ -261,13 +261,12 @@ func urlEscape(s string) string {
 }
 
 func pageFooter() string {
-	return "\n\n---\n\n_Page generée par [graft](https://github.com/jeanbaptiste/graft) le " +
-		time.Now().UTC().Format("2006-01-02 15:04 UTC") + "_"
+	return "\n\n<!-- graft-sync @ " + time.Now().UTC().Format("2006-01-02 15:04 UTC") + " -->\n"
 }
 
 func removeFooter(content string) string {
-	// Remove the footer line if present (starts with _Page generée par graft...)
-	idx := strings.LastIndex(content, "\n\n---\n\n_Page generée par")
+	// Remove the footer comment if present (<!-- graft-sync @ ... -->)
+	idx := strings.LastIndex(content, "\n\n<!-- graft-sync @")
 	if idx < 0 {
 		return content
 	}
