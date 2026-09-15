@@ -120,7 +120,8 @@ var (
 	reBullet     = regexp.MustCompile(`^-\s+(.*)$`)
 	reSocialPage = regexp.MustCompile(`^Social-([A-Za-z]+)$`)
 	// An entry's author as internal/wiki writes it: "**@name**".
-	reAuthor = regexp.MustCompile(`\*\*@([^*\s]+)\*\*`)
+	// Older entries doubled the "@" ("**@@name**"); both forms match.
+	reAuthor = regexp.MustCompile(`\*\*@+([^*\s@][^*\s]*)\*\*`)
 )
 
 // profileLink, when set, maps an entry author's name to their profile URL
@@ -192,7 +193,7 @@ func inline(s string) string {
 			name := reAuthor.FindStringSubmatch(m)[1]
 			href := profileLink(html.UnescapeString(name))
 			if href == "" {
-				return m
+				return "**@" + name + "**"
 			}
 			return fmt.Sprintf(`<strong><a href="%s">@%s</a></strong>`, html.EscapeString(href), name)
 		})

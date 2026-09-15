@@ -33,6 +33,8 @@ func TestAuthorProfileLinks(t *testing.T) {
 		{"Mastodon", "**@lea.moreau@social.example** wrote:", `<strong><a href="https://social.example/@lea.moreau">@lea.moreau@social.example</a></strong> wrote:`},
 		{"Mastodon", "**@researcher** wrote:", `<strong>@researcher</strong> wrote:`},
 		{"Zulip", "**@thomas.k** wrote:", `<strong>@thomas.k</strong> wrote:`},
+		{"Discourse", "**@@system** wrote:", `<strong><a href="https://discourse.example/u/system">@system</a></strong> wrote:`},
+		{"Zulip", "**@@graft** wrote:", `<strong>@graft</strong> wrote:`},
 	}
 	for _, c := range cases {
 		profileLink = profileLinker(c.platform, "https://discourse.example", "https://tangled.example")

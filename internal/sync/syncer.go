@@ -277,6 +277,8 @@ func (rs *RepoSyncer) LogSocialReply(platform, author, body, itemKind, itemTitle
 		"# Social — %s\n\nDiscussion about this repository mirrored from **%s**, newest first.",
 		platform, platform)
 
+	// Bridges already hand over "@name"; the entry adds its own "@".
+	author = strings.TrimLeft(author, "@")
 	quoted := "> " + strings.ReplaceAll(strings.TrimSpace(body), "\n", "\n> ")
 	link := itemTitle
 	if itemURL != "" {
