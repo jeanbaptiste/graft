@@ -7,7 +7,16 @@ Should a better distinction be made between **inter-forge collaboratioin** and *
 - **inter-forge collaboration** would refer to effective tools enabling a fraction a people willing to work together but from their own, separate forges. This would concern local or small teams to work on rather restricted projects with limited access and size.
 - **forge-federation** would refer to a more global approach to **social-coding** (or social-hacking) enabling a wider audience to work and share content in the same way they discover new content, and connect with new peers through social platform such as Mastodon. This would concern more global scale open project.
 
-## Collaborating between tow Forgejo instances
+## Mixed approaches
+
+Let's review how to share code between platforms without a dedicated account, starting from the more common and easiest way.
+
+1. Send a patch to a mailing list (Historical Unix/Linux approach, current SourceHut approach)
+2. Use Git decentralize architecture (remotes)
+
+## Using remotes
+
+Collaborating between two Forgejo instances
 
 - Two Forgejo instances f1 and f2
 - **Alice** have a copy a ``federation-x`` repo on f1
