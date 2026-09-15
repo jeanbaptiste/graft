@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -166,6 +167,37 @@ type Notification struct {
 			} `json:"parent"`
 		} `json:"reply"`
 	} `json:"record"`
+}
+
+// DID is the logged-in account's DID ("" before Login).
+func (c *Client) DID() string { return c.did }
+
+// PostText returns the text of the app.bsky.feed.post record at atURI,
+// read from this client's PDS (records are public, no auth needed).
+func (c *Client) PostText(atURI string) (string, error) {
+	rest := strings.TrimPrefix(atURI, "at://")
+	parts := strings.Split(rest, "/")
+	if len(parts) != 3 || parts[1] != "app.bsky.feed.post" {
+		return "", fmt.Errorf("not a post URI: %q", atURI)
+	}
+	q := url.Values{"repo": {parts[0]}, "collection": {parts[1]}, "rkey": {parts[2]}}
+	resp, err := c.http.Get(c.pdsHost + "/xrpc/com.atproto.repo.getRecord?" + q.Encode())
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("getRecord %s: HTTP %d", atURI, resp.StatusCode)
+	}
+	var out struct {
+		Value struct {
+			Text string `json:"text"`
+		} `json:"value"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return "", err
+	}
+	return out.Value.Text, nil
 }
 
 // ListNotifications fetches one page of notifications, newest first.

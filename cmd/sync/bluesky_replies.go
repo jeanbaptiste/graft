@@ -118,7 +118,27 @@ func pollSeriesReplies(series, handle, appPassword, pdsHost string, live *liveSt
 			continue
 		}
 		if !found {
-			continue // a reply to something graft didn't post about, or to a reply itself
+			// Not a post graft made about a commit or patch — but if the
+			// series' own account wrote it (an announcement, a question to
+			// followers), the reply is still discussion about this
+			// repository: record it on the wiki with that post as its
+			// subject. Replies to anyone else's posts stay on Bluesky.
+			if !strings.HasPrefix(parentURI, "at://"+c.DID()+"/app.bsky.feed.post/") {
+				continue
+			}
+			rs, ok := live.syncerForSeries(series)
+			if !ok {
+				continue
+			}
+			title := "post Bluesky de @" + handle
+			if text, err := c.PostText(parentURI); err == nil && strings.TrimSpace(text) != "" {
+				title = truncateATProtoSummary(strings.SplitN(strings.TrimSpace(text), "\n", 2)[0])
+			}
+			if err := rs.LogSocialReply("Bluesky", "@"+n.Author.Handle, strings.TrimSpace(n.Record.Text), "post", title,
+				blueskyPermalink(handle, parentURI), blueskyPermalink(n.Author.Handle, n.URI), 0, "", time.Now()); err != nil {
+				log.Error("bluesky reply: log reply to account post", "series", series, "err", err)
+			}
+			continue
 		}
 		e, err := st.ActivityByID(activityID)
 		if err != nil {
