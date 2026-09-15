@@ -36,10 +36,12 @@ Graft's ablility to broadcast git contents across many git platforms (Github, Fo
 
 A possible solution to adress this security issue would be to have a mix approach using 'traditional' git (forks and/or remotes) with Graft. 
 
-For example, the user rvba on the artefacts.bimr.net can create a fork or the shared repo (here Graft) and have a 'sync' and 'open' repo from an internal 'proxy user' (here Alice).
+For example, the user **rvba** on the artefacts.bimr.net can create a fork or the shared repo (here Graft) and have a 'sync' and 'open' repo from an internal 'proxy user' (here **alice**).
 
-  * Fork: [rvba/graft](https://artefacts.bimr.net/rvba/graft)
-  * Proxy: [alice/graft](https://artefacts.bimr.net/alice/graft)
+  * Fork: [rvba/graft](https://artefacts.bimr.net/rvba/graft) (rvba)
+  * Proxy: [alice/graft](https://artefacts.bimr.net/alice/graft) (alice)
+
+In this scenario, the user rvba is registered as a **collaborator** within alice proxy repo. The user has now the possiblity to have direct contribution to to shared repo (with a broadcast effect), and/or to have separate branches and work with PR's from his own fork.
 
 
 
