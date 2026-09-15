@@ -283,15 +283,14 @@ func (rs *RepoSyncer) LogSocialReply(platform, author, body, itemKind, itemTitle
 	// A trackback to the reply's own post/comment on the originating
 	// platform, not just the mirrored issue/patch — lets a reader jump
 	// straight to the real conversation instead of only seeing the
-	// quoted excerpt here. Not every ingestion path can supply this yet
-	// (a bridge has to know its own content's public URL), so it's
-	// omitted rather than shown broken when empty.
-	trackback := ""
+	// quoted excerpt here. The trackback is rendered as a clickable link
+	// with platform context.
+	var trackbackLine string
 	if sourceURL != "" {
-		trackback = fmt.Sprintf(" &middot; [source](%s)", sourceURL)
+		trackbackLine = fmt.Sprintf("\n\n[→ %s conversation](%s)", platform, sourceURL)
 	}
-	entry := fmt.Sprintf("### %s\n\n%s &middot; %s%s\n\n**%s** wrote:\n\n%s\n",
-		occurredAt.UTC().Format("2006-01-02 15:04 UTC"), link, itemKind, trackback, author, quoted)
+	entry := fmt.Sprintf("### %s\n\n%s &middot; %s &middot; **@%s**%s\n\n**%s** wrote:\n\n%s\n",
+		occurredAt.UTC().Format("2006-01-02 15:04 UTC"), link, itemKind, author, trackbackLine, author, quoted)
 
 	slog.Info("LogSocialReply: before fanout", "pair", rs.pair.Name)
 	rs.fanoutSocialReply(itemKind, radicleID, platform, author, body)
