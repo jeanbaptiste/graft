@@ -289,8 +289,8 @@ func (rs *RepoSyncer) LogSocialReply(platform, author, body, itemKind, itemTitle
 	if sourceURL != "" {
 		trackbackLine = fmt.Sprintf("\n\n[→ %s conversation](%s)", platform, sourceURL)
 	}
-	entry := fmt.Sprintf("### %s\n\n%s &middot; %s &middot; **@%s**%s\n\n**%s** wrote:\n\n%s\n",
-		occurredAt.UTC().Format("2006-01-02 15:04 UTC"), link, itemKind, author, trackbackLine, author, quoted)
+	entry := fmt.Sprintf("### **%s UTC**\n\n%s &middot; %s &middot; **@%s**%s\n\n**%s** wrote:\n\n%s\n",
+		occurredAt.UTC().Format("2006-01-02 15:04"), link, itemKind, author, trackbackLine, author, quoted)
 
 	slog.Info("LogSocialReply: before fanout", "pair", rs.pair.Name)
 	rs.fanoutSocialReply(itemKind, radicleID, platform, author, body)
